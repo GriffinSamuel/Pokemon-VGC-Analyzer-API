@@ -1,0 +1,6 @@
+node_modules/
+logs/
+.env
+.venv/
+src/ml/data/
+src/ml/models/

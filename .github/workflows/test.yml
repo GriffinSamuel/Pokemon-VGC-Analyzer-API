@@ -1,0 +1,59 @@
+name: Test
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    # NOTE: src/db/pool.js hardcodes its connection params (see CLAUDE.md — this is
+    # intentional, not something this workflow changes). Node never reads these
+    # secrets directly; they exist so this container is provisioned with the exact
+    # same user/password/db pool.js already expects. The repo secrets DB_USER,
+    # DB_PASSWORD, and DB_NAME must therefore be set to postgres / R@1nb0w! /
+    # pokemon_vgc respectively, or the app won't be able to connect in CI.
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: ${{ secrets.DB_USER }}
+          POSTGRES_PASSWORD: ${{ secrets.DB_PASSWORD }}
+          POSTGRES_DB: ${{ secrets.DB_NAME }}
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Apply database schema
+        run: psql -h localhost -U "$DB_USER" -d "$DB_NAME" -f src/db/schema.sql
+        env:
+          DB_USER: ${{ secrets.DB_USER }}
+          DB_NAME: ${{ secrets.DB_NAME }}
+          PGPASSWORD: ${{ secrets.DB_PASSWORD }}
+
+      - name: Seed database
+        run: node src/db/seed.js
+
+      - name: Run integration tests
+        run: node src/tests/api.test.js
+
+      - name: Report success
+        if: success()
+        run: echo "All tests passed — ready to deploy"
