@@ -70,11 +70,12 @@ function typesOf(pokemonRow) {
 }
 
 // --- Meta type prevalence (shared by coverage gaps + weakness analysis) ---------
-// "How much of the top-50-usage metagame carries type X" — a real, queried signal
-// (usage_percent summed per type), not an assumption. Also returns which specific
-// top-usage Pokemon carry each type, for naming concrete examples in gap/weakness
-// notes ("Whimsicott and Sylveon are common threats").
+// "What share of tournament teams carry at least one Pokemon of type X" — counted
+// as unique teams (not sum of per-Pokemon usage, which double-counts dual-typed).
+// Also returns which specific top-usage Pokemon carry each type, for naming
+// concrete examples in gap/weakness notes.
 async function getTypeMetaData() {
+  // byType: which top-50 Pokemon contribute to each type (for concrete examples)
   const { rows } = await pool.query(
     `SELECT p.name, p.type1, p.type2, u.usage_percent
      FROM usage_stats u JOIN pokemon p ON LOWER(p.name) = LOWER(u.pokemon_name)
@@ -82,19 +83,54 @@ async function getTypeMetaData() {
     [TOP_USAGE_LIMIT]
   );
 
-  const prevalence = {};
   const byType = {};
   for (const row of rows) {
     const usage = parseFloat(row.usage_percent) / 100;
     for (const type of [row.type1, row.type2].filter(Boolean)) {
-      prevalence[type] = (prevalence[type] || 0) + usage;
       (byType[type] = byType[type] || []).push({ name: row.name, usage: round(usage, 4) });
     }
   }
   for (const type of Object.keys(byType)) {
     byType[type].sort((a, b) => b.usage - a.usage);
-    // Cap at 1.0 (100%) — sums can exceed 1.0 when multiple Pokemon share a type
-    prevalence[type] = Math.min(prevalence[type] || 0, 1.0);
+  }
+
+  // prevalence: share of tournament teams containing at least one Pokemon of type X.
+  // Each team counted once per type (no double-counting of dual-typed Pokemon).
+  const prevalence = {};
+  try {
+    const { rows: teamCounts } = await pool.query(
+      `WITH team_pokemon AS (
+         SELECT tt.id AS team_id,
+                jsonb_array_elements_text(tt.pokemon_names) AS pokemon_name
+         FROM tournament_teams tt
+       ),
+       team_types AS (
+         SELECT tp.team_id, p.type1, p.type2
+         FROM team_pokemon tp
+         JOIN pokemon p ON LOWER(p.name) = LOWER(tp.pokemon_name)
+       )
+       SELECT t.type, COUNT(DISTINCT tt.team_id) AS team_count
+       FROM team_types tt,
+            LATERAL (VALUES (tt.type1), (tt.type2)) AS t(type)
+       WHERE t.type IS NOT NULL
+       GROUP BY t.type`
+    );
+    const { rows: totalRows } = await pool.query('SELECT COUNT(*)::int AS cnt FROM tournament_teams');
+    const totalTeams = totalRows[0]?.cnt || 1;
+    for (const r of teamCounts) {
+      prevalence[r.type] = r.team_count / totalTeams;
+    }
+  } catch (_err) {
+    // Fallback: sum of usage percentages (may exceed 1.0 for dual-typed)
+    for (const row of rows) {
+      const usage = parseFloat(row.usage_percent) / 100;
+      for (const type of [row.type1, row.type2].filter(Boolean)) {
+        prevalence[type] = (prevalence[type] || 0) + usage;
+      }
+    }
+    for (const type of Object.keys(prevalence)) {
+      prevalence[type] = Math.min(prevalence[type] || 0, 1.0);
+    }
   }
 
   return { prevalence, byType };

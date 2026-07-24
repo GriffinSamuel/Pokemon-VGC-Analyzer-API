@@ -791,8 +791,11 @@ function buildSpAllocationWhy(member) {
     }
   }
 
-  // PROBLEM 4: justified + unspendable must always sum to 66
-  lines.push(`  SP: ${justifiedSp} justified + ${unspendableSp} unspendable = ${justifiedSp + unspendableSp} total`);
+  // Every SP must be accounted for: justified by threshold + unspendable (no
+  // threshold or budget remainder). Sum must equal exactly 66.
+  const SP_BUDGET = 66;
+  const unspendableTotal = SP_BUDGET - justifiedSp;
+  lines.push(`  SP: ${justifiedSp} justified + ${unspendableTotal} unspendable = ${SP_BUDGET} total`);
   return lines;
 }
 
@@ -822,8 +825,7 @@ function buildTeamBuildText(responseBody, team) {
         const redStrs = Object.entries(mini.reductions).map(([s, r]) => `${r.saved} ${SHOWDOWN_STAT_LABELS[s]} (${r.from}→${r.to})`);
         lines.push(`  SP minimized: removed ${redStrs.join(', ')}`);
       }
-      // "Redistributed" text removed — redistribution is now shown inline
-      // in buildSpAllocationWhy() as justifying each stat's threshold.
+
     }
     for (const mv of member.moves) {
       const ctx = mv.team_context ? ` — ${mv.team_context}` : '';

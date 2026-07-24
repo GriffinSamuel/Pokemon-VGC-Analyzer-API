@@ -117,7 +117,7 @@ Models whether an attacker would realistically deploy a specific move:
 ### Speed-OHKO Link (spread_scorer.js)
 - `SPEED_OHKO_LINK_MULTIPLIER = 3.0` — outspeed bonus ×3 when attacker also OHKOs at baseline
 - `DEATH_TRAP_MIN_WEIGHT = 0.15`, `PENALTY_MULTIPLIER = 2.0` — penalty when outsped + OHKO'd at baseline + no Protect/priority in top 4 moves
-- `SCORER_VERSION = 6` — included in evolutionary cache key
+- `SCORER_VERSION = 9` — included in evolutionary cache key
 
 ### KO Tier Classification
 - Defensive: `koCheckValue = Math.max(maxs)` — single highest damage across all top-3 builds' full roll ranges

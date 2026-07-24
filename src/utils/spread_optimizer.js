@@ -50,7 +50,7 @@ function clampSpread(sp) {
 const POST_VALIDATION_HOOK = (sp) => {
   const result = validateSpread(sp);
   if (!result.valid) {
-    logger.error('SP cap violation detected and clamped', { errors: result.errors, sp });
+    throw new Error(`SP cap violation: ${result.errors.join('; ')} — ${JSON.stringify(sp)}`);
   }
 };
 
@@ -540,25 +540,14 @@ async function findOptimalSpread(pokemon, nature, role, threatMatrix, metaContex
   if (isFastRole && hasHighBaseSpeed && !lockedIndices.has(STAT_INDEX.spe) && top[0]) {
     const bestSp = top[0].sp;
     if ((bestSp.spe || 0) < SP_CAP_PER_STAT) {
-      // Create speed-32 variant
-      const variant = { ...bestSp, spe: SP_CAP_PER_STAT };
-      // Take 1 SP from lowest-weighted non-offensive stat that has SP to give
-      const nonOffensiveStats = STATS.filter((s, i) =>
-        i !== STAT_INDEX.spe && !lockedIndices.has(i) && s !== 'atk' && s !== 'spa' && (variant[s] || 0) > 0
-      );
-      nonOffensiveStats.sort((a, b) => {
-        const wi = STATS.indexOf(a), wj = STATS.indexOf(b);
-        return weights[wi] - weights[wj];
-      });
-      if (nonOffensiveStats.length > 0) {
-        variant[nonOffensiveStats[0]] = (variant[nonOffensiveStats[0]] || 0) - 1;
-        POST_VALIDATION_HOOK(variant);
-        // Score the variant
-        const variantScore = await scoreSpread(pokemon, variant, nature, role, threatMatrix, metaContext, { item, fieldOpts });
-        // If variant scores within 5% of the best, use it (speed tie-breaking is critical)
-        if (variantScore.score >= top[0].score * 0.95) {
-          top[0] = { sp: variant, score: variantScore.score };
-        }
+      // Create speed-32 variant, clamped to 66 total budget
+      const variant = clampSpread({ ...bestSp, spe: SP_CAP_PER_STAT });
+      POST_VALIDATION_HOOK(variant);
+      // Score the variant
+      const variantScore = await scoreSpread(pokemon, variant, nature, role, threatMatrix, metaContext, { item, fieldOpts });
+      // If variant scores within 5% of the best, use it (speed tie-breaking is critical)
+      if (variantScore.score >= top[0].score * 0.95) {
+        top[0] = { sp: variant, score: variantScore.score };
       }
     }
   }
@@ -581,9 +570,9 @@ async function findOptimalSpread(pokemon, nature, role, threatMatrix, metaContex
     });
   }
 
-  // SP MINIMIZATION: checks which stats have attributed thresholds and removes
-  // SP from stats with no threshold (unspendable). Leftover SP redistributed by
-  // role (see minimizeSpread in spread_scorer.js).
+  // SP MINIMIZATION: strips unattributed SP (STEP 1), then downward-minimizes
+  // each stat (STEP 2) — decreases SP by 1 if score unchanged. See
+  // minimizeSpread in spread_scorer.js.
   if (spreads.length > 0 && teamBuild) {
     const topSpread = spreads[0];
     try {
@@ -595,24 +584,12 @@ async function findOptimalSpread(pokemon, nature, role, threatMatrix, metaContex
       topSpread.thresholds_met = minimResult.thresholds_met;
       topSpread.minimization = {
         reductions: minimResult.reductions,
-        redistributed: minimResult.redistributed,
         unspendable: minimResult.unspendable || 0,
-        total_leftover: minimResult.total_leftover,
       };
     } catch (err) {
-      // Minimization failure — clamp the spread to total 66 SP cap and continue
+      // Minimization failure — log, clamp the spread, and continue
+      console.error('Minimization failed for ' + (pokemon?.name || pokemon) + ': ' + err.message);
       topSpread.sp = clampSpread(topSpread.sp);
-      const total = Object.values(topSpread.sp).reduce((a, b) => a + b, 0);
-      if (total > SP_BUDGET_TOTAL) {
-        // Reduce proportionally from the highest-invested stat
-        const excess = total - SP_BUDGET_TOTAL;
-        const sortedStats = ['spd', 'def', 'hp', 'atk', 'spa', 'spe'].sort((a, b) => (topSpread.sp[b] || 0) - (topSpread.sp[a] || 0));
-        for (const stat of sortedStats) {
-          if (excess <= 0) break;
-          const reduction = Math.min(topSpread.sp[stat] || 0, excess);
-          topSpread.sp[stat] = (topSpread.sp[stat] || 0) - reduction;
-        }
-      }
       POST_VALIDATION_HOOK(topSpread.sp);
     }
   }
