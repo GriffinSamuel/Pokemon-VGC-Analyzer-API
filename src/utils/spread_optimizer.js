@@ -30,6 +30,20 @@ function clampSpread(sp) {
     if (clamped[stat] > SP_CAP_PER_STAT) clamped[stat] = SP_CAP_PER_STAT;
     if (clamped[stat] < 0) clamped[stat] = 0;
   }
+  // Also enforce total 66 SP cap
+  let total = STATS.reduce((sum, s) => sum + (clamped[s] || 0), 0);
+  if (total > SP_BUDGET_TOTAL) {
+    const excess = total - SP_BUDGET_TOTAL;
+    // Remove excess from least valuable stats first: unused offense, then def/spd, then HP, then Spe
+    const capOrder = ['atk', 'spa', 'spd', 'def', 'hp', 'spe'];
+    let remaining = excess;
+    for (const stat of capOrder) {
+      if (remaining <= 0) break;
+      const reduction = Math.min(clamped[stat] || 0, remaining);
+      clamped[stat] = (clamped[stat] || 0) - reduction;
+      remaining -= reduction;
+    }
+  }
   return clamped;
 }
 
@@ -582,10 +596,24 @@ async function findOptimalSpread(pokemon, nature, role, threatMatrix, metaContex
       topSpread.minimization = {
         reductions: minimResult.reductions,
         redistributed: minimResult.redistributed,
+        unspendable: minimResult.unspendable || 0,
         total_leftover: minimResult.total_leftover,
       };
     } catch (err) {
-      // Minimization failure is non-fatal — keep the un-minimized spread
+      // Minimization failure — clamp the spread to total 66 SP cap and continue
+      topSpread.sp = clampSpread(topSpread.sp);
+      const total = Object.values(topSpread.sp).reduce((a, b) => a + b, 0);
+      if (total > SP_BUDGET_TOTAL) {
+        // Reduce proportionally from the highest-invested stat
+        const excess = total - SP_BUDGET_TOTAL;
+        const sortedStats = ['spd', 'def', 'hp', 'atk', 'spa', 'spe'].sort((a, b) => (topSpread.sp[b] || 0) - (topSpread.sp[a] || 0));
+        for (const stat of sortedStats) {
+          if (excess <= 0) break;
+          const reduction = Math.min(topSpread.sp[stat] || 0, excess);
+          topSpread.sp[stat] = (topSpread.sp[stat] || 0) - reduction;
+        }
+      }
+      POST_VALIDATION_HOOK(topSpread.sp);
     }
   }
 

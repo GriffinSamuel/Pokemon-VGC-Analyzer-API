@@ -55,7 +55,7 @@ const DEATH_TRAP_PENALTY_MULTIPLIER = 2.0;
 // Bumped 4->5 this round: attacker items are now threaded into the real damage
 // calc itself (FIX 3/4), not just display — a genuine scoring-relevant change,
 // not merely a cosmetic one, so stale pre-fix cached scores must not survive.
-const SCORER_VERSION = 7;
+const SCORER_VERSION = 8;
 
 // FIX 2: steeper type_value curve. This is a NEW multiplicative layer specific
 // to this file's evolutionary scorer — it does not replace or alter
@@ -567,6 +567,9 @@ function buildAttackerBuildLabel(attackerSpreads, attackerItem, moveCategory, mo
 //   Head Smash: 50%
 // Damage dealt is capped at target's remaining HP (100%) before applying recoil ratio,
 // so overkill (e.g. 191% listed damage) doesn't inflate recoil beyond what's possible.
+// Problem 6 fix: recoil range derived from real damage range, clamped at move's
+// max fraction (33.3% Flare Blitz, 25% Wild Charge, 50% Head Smash) and at 100%
+// of attacker max HP. When both values hit the same cap, show single number.
 function buildRecoilText(moveName, minPercent, maxPercent) {
   const recoilRatio = RECOIL_MOVES.get(moveName.toLowerCase());
   if (!recoilRatio) return '';
@@ -576,6 +579,9 @@ function buildRecoilText(moveName, minPercent, maxPercent) {
   const maxRecoilPct = recoilRatio * 100;
   const recoilMin = Math.round(Math.min(cappedMin * recoilRatio, maxRecoilPct) * 100) / 100;
   const recoilMax = Math.round(Math.min(cappedMax * recoilRatio, maxRecoilPct) * 100) / 100;
+  if (recoilMin === recoilMax) {
+    return ` (${recoilMin}% recoil to attacker${recoilMin >= maxRecoilPct * 0.95 ? ' — capped' : ''})`;
+  }
   return ` (${recoilMin}-${recoilMax}% recoil to attacker)`;
 }
 
@@ -1002,10 +1008,13 @@ async function scoreSpread(pokemon, sp, nature, role, threatMatrix, metaContext,
 
 // SP minimization: checks which stats have attributed thresholds in the
 // evolutionary result. Any SP in a stat with NO attributed thresholds is
-// "unspendable" and then redistributed by attempting evolutionary re-scoring
-// (3 attempts) to see if freed SP can buy any threshold. If not, defaults
-// to HP first, then lower of Def/SpD. Hard 32 per-stat cap enforced throughout.
-// Returns { minimized_sp, reductions, redistributed, total_leftover, final_stats, thresholds_met }
+// freed, then redistributed as a FINAL END STEP via rigorous per-SP testing:
+// for each freed SP, try +1 in each stat priority order (HP → lowest def →
+// higher offense → spe), keeping whichever improves the score most. Any SP
+// that provides zero benefit to ANY stat is reported as unspendable.
+// Hard 32 per-stat cap and total 66 SP cap enforced with assertion.
+// Returns { minimized_sp, reductions, redistributed, unspendable,
+//   total_leftover, final_stats, thresholds_met }
 async function minimizeSpread(pokemon, sp, nature, role, threatMatrix, metaContext, item, fieldOpts) {
   const STATS = ['hp', 'atk', 'def', 'spa', 'spd', 'spe'];
   const opts = { detailed: true, item, ...(fieldOpts ? { fieldOpts } : {}) };
@@ -1028,83 +1037,76 @@ async function minimizeSpread(pokemon, sp, nature, role, threatMatrix, metaConte
     }
   }
 
-  // Redistribute freed SP: first try evolutionary re-scoring (3 attempts),
-  // then fall back to role-based defaults (HP first, then lower Def/SpD).
+  // STEP 2: Final end-step redistribution — test each freed SP individually.
+  // Priority: HP → lowest def → higher offense → spe. Each SP is tested by
+  // scoreSpread at each candidate position; the stat that improves score the
+  // most gets it. If no stat improves, it's unspendable.
   const totalLeftover = STATS.reduce((sum, s) => sum + ((sp[s] || 0) - (minimizedSp[s] || 0)), 0);
   const redistributed = {};
+  const redistributedAmounts = {};
+  let unspendable = 0;
 
   if (totalLeftover > 0) {
-    let bestScore = baseline.score;
     let bestSp = { ...minimizedSp };
+    let bestScore = baseline.score;
 
-    // Attempt 3 redistribution tries to see if SP can buy any threshold
-    for (let attempt = 0; attempt < 3; attempt++) {
-      const trySp = { ...minimizedSp };
-      const candidates = STATS.filter(s => (trySp[s] || 0) < SP_CAP_PER_STAT);
-      if (candidates.length === 0) break;
+    // Build priority order: HP first, then defense stats (lowest first),
+    // then offense stats (higher investment first), then Speed
+    const fastRoles = ['fast_offense', 'fast_support'];
+    const isFast = fastRoles.includes(role);
+    const defStats = ['def', 'spd'].sort((a, b) => (bestSp[a] || 0) - (bestSp[b] || 0));
+    const offStats = ['atk', 'spa'].sort((a, b) => (bestSp[b] || 0) - (bestSp[a] || 0));
+    const priorityStats = ['hp', ...defStats, ...(isFast ? ['spe', ...offStats] : [...offStats, 'spe'])];
 
-      // Randomly pick a stat to try spending freed SP in
-      const pick = candidates[Math.floor(Math.random() * candidates.length)];
-      const available = Math.min(totalLeftover, SP_CAP_PER_STAT - (trySp[pick] || 0));
-      if (available <= 0) continue;
+    for (let i = 0; i < totalLeftover; i++) {
+      let bestCandidate = null;
+      let bestCandidateScore = bestScore;
+      let bestCandidateSp = null;
 
-      trySp[pick] = (trySp[pick] || 0) + available;
+      for (const stat of priorityStats) {
+        if ((bestSp[stat] || 0) >= SP_CAP_PER_STAT) continue;
+        const testSp = { ...bestSp, [stat]: (bestSp[stat] || 0) + 1 };
 
-      try {
-        const tryResult = await scoreSpread(pokemon, trySp, nature, role, threatMatrix, metaContext, opts);
-        if (tryResult.score > bestScore) {
-          bestScore = tryResult.score;
-          bestSp = { ...trySp };
-          redistributed[pick] = { amount: available, reason: 'evolutionary attempt' };
-        }
-      } catch (_) {
-        // Redistributing to this stat didn't work — skip
+        try {
+          const testResult = await scoreSpread(pokemon, testSp, nature, role, threatMatrix, metaContext, opts);
+          if (testResult.score > bestCandidateScore) {
+            bestCandidateScore = testResult.score;
+            bestCandidateSp = testSp;
+            bestCandidate = stat;
+          }
+        } catch (_) { /* skip failed calc */ }
       }
-    }
 
-    // If no evolutionary attempt improved the score, redistribute to
-    // HP first, then the lower of the Pokemon's two defense stats
-    if (Object.keys(redistributed).length === 0) {
-      let targetStat;
-      if (role === 'fast_offense' || role === 'fast_support') {
-        targetStat = (minimizedSp.spe || 0) < SP_CAP_PER_STAT ? 'spe' : 'hp';
-      } else if (role === 'slow_bulky_offense' || role === 'slow_bulky_support') {
-        targetStat = (pokemon.def || 0) <= (pokemon.spd || 0) ? 'def' : 'spd';
+      if (bestCandidate) {
+        bestSp = bestCandidateSp;
+        bestScore = bestCandidateScore;
+        redistributedAmounts[bestCandidate] = (redistributedAmounts[bestCandidate] || 0) + 1;
       } else {
-        targetStat = 'hp';
-      }
-
-      const available = Math.min(totalLeftover, SP_CAP_PER_STAT - (bestSp[targetStat] || 0));
-      bestSp[targetStat] = (bestSp[targetStat] || 0) + available;
-      redistributed[targetStat] = {
-        amount: available,
-        reason: targetStat === 'hp' ? 'bulk' : targetStat === 'spe' ? 'speed (fast role)' : 'defense',
-      };
-
-      // Any remaining SP goes to HP
-      const remaining = totalLeftover - available;
-      if (remaining > 0) {
-        const hpRoom = Math.min(remaining, SP_CAP_PER_STAT - (bestSp.hp || 0));
-        if (hpRoom > 0) {
-          bestSp.hp = (bestSp.hp || 0) + hpRoom;
-          redistributed.hp = { amount: hpRoom, reason: 'bulk' };
-        }
+        unspendable++;
       }
     }
 
-    minimizedSp.hp = bestSp.hp;
-    minimizedSp.atk = bestSp.atk;
-    minimizedSp.def = bestSp.def;
-    minimizedSp.spa = bestSp.spa;
-    minimizedSp.spd = bestSp.spd;
-    minimizedSp.spe = bestSp.spe;
+    // Build redistribution entries with justification
+    for (const [stat, amount] of Object.entries(redistributedAmounts)) {
+      if (amount > 0) {
+        const spVal = bestSp[stat] || 0;
+        redistributed[stat] = { amount, reason: `+${amount} ${stat.toUpperCase()} SP tested: improves score at ${spVal} SP` };
+      }
+    }
+
+    // Apply the best SP found
+    Object.assign(minimizedSp, bestSp);
   }
 
-  // Final cap enforcement: clamp any stat that would exceed the 32 SP cap
+  // Hard 32 per-stat cap enforcement
   for (const stat of STATS) {
-    if ((minimizedSp[stat] || 0) > SP_CAP_PER_STAT) {
-      minimizedSp[stat] = SP_CAP_PER_STAT;
-    }
+    if (minimizedSp[stat] > SP_CAP_PER_STAT) minimizedSp[stat] = SP_CAP_PER_STAT;
+  }
+
+  // Enforce total 66 SP cap — assert on violation
+  const totalUsed = STATS.reduce((sum, s) => sum + (minimizedSp[s] || 0), 0);
+  if (totalUsed > SP_BUDGET_TOTAL) {
+    throw new Error(`SP cap violation: total ${totalUsed} exceeds budget ${SP_BUDGET_TOTAL} for ${pokemon.name || pokemon}`);
   }
 
   const finalStats = computeFinalStats(pokemon, minimizedSp, nature);
@@ -1113,6 +1115,7 @@ async function minimizeSpread(pokemon, sp, nature, role, threatMatrix, metaConte
     minimized_sp: minimizedSp,
     reductions,
     redistributed,
+    unspendable,
     total_leftover: totalLeftover,
     final_stats: finalStats,
     baseline_score: baseline.score,

@@ -765,28 +765,34 @@ function buildSpAllocationWhy(member) {
   }
   const primaryOffenseStat = member.pokemonRow.atk >= member.pokemonRow.spa ? 'atk' : 'spa';
   const allDefensiveThresholds = (member.thresholds_met || []).filter(t => t.category === 'defensive');
-  const mini = member.minimization;
   const lines = [];
+  let justifiedSp = 0;
+  let unspendableSp = 0;
+
   for (const statKey of SP_ORDER) {
     const spVal = member.sp[statKey] || 0;
     if (spVal === 0) continue;
     const label = `${spVal} ${SHOWDOWN_STAT_LABELS[statKey]}`;
     const best = bestByStat[statKey];
-    const miniRedist = mini?.redistributed?.[statKey];
 
-    if (best && !miniRedist) {
-      // This stat has justified thresholds — show them
+    // PROBLEM 2 FIX: justification text is NEVER overwritten by redistribution.
+    // Every stat with SP shows its justifying threshold + [also:.] secondaries.
+    if (best) {
+      justifiedSp += spVal;
       lines.push(`${label} — ${describeThresholdForWhy(best, allDefensiveThresholds, statKey)}`);
-    } else if (miniRedist) {
-      // This stat received redistributed leftover SP — explain why
-      const minVal = spVal - miniRedist.amount;
-      lines.push(`${label} — ${miniRedist.amount} unspendable SP redistributed here for ${miniRedist.reason}${minVal > 0 ? ` (minimum justified: ${minVal})` : ''}`);
     } else if (statKey === primaryOffenseStat) {
+      justifiedSp += spVal;
       lines.push(`${label} — maximized for offensive role`);
     } else {
-      lines.push(`${label} — unspendable SP: ${spVal} (no scored threshold cleared)`);
+      // PROBLEM 4: SP in stats with no threshold IS unspendable, even if the
+      // optimizer physically placed it there via dump-stat allocation.
+      unspendableSp += spVal;
+      lines.push(`${label} — unspendable SP: ${spVal} (no threshold cleared)`);
     }
   }
+
+  // PROBLEM 4: justified + unspendable must always sum to 66
+  lines.push(`  SP: ${justifiedSp} justified + ${unspendableSp} unspendable = ${justifiedSp + unspendableSp} total`);
   return lines;
 }
 
@@ -816,11 +822,8 @@ function buildTeamBuildText(responseBody, team) {
         const redStrs = Object.entries(mini.reductions).map(([s, r]) => `${r.saved} ${SHOWDOWN_STAT_LABELS[s]} (${r.from}→${r.to})`);
         lines.push(`  SP minimized: removed ${redStrs.join(', ')}`);
       }
-      if (mini.redistributed && Object.keys(mini.redistributed).length > 0) {
-        Object.entries(mini.redistributed).forEach(([s, r]) => {
-          lines.push(`  Redistributed: +${r.amount} ${SHOWDOWN_STAT_LABELS[s]} for ${r.reason}`);
-        });
-      }
+      // "Redistributed" text removed — redistribution is now shown inline
+      // in buildSpAllocationWhy() as justifying each stat's threshold.
     }
     for (const mv of member.moves) {
       const ctx = mv.team_context ? ` — ${mv.team_context}` : '';
@@ -960,7 +963,7 @@ function buildTeamBuildText(responseBody, team) {
     for (const t of moveGroup.targets) {
       const rangeParts = (t.damage_range || '').split('-');
       const recoilSuffix = rangeParts.length === 2 ? buildRecoilText(t.move, parseFloat(rangeParts[0]), parseFloat(rangeParts[1])) : '';
-      lines.push(`    ${t.target} — OHKO vs ${t.guaranteed_vs_all || 'observed spreads'}${recoilSuffix} (${t.target_sp_source})`);
+      lines.push(`    ${t.target} — ${t.guaranteed_vs_all || 'OHKO vs observed spreads'}${recoilSuffix} (${t.target_sp_source})`);
     }
   }
 

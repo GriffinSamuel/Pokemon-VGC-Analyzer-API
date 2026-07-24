@@ -91,7 +91,11 @@ async function getTypeMetaData() {
       (byType[type] = byType[type] || []).push({ name: row.name, usage: round(usage, 4) });
     }
   }
-  for (const type of Object.keys(byType)) byType[type].sort((a, b) => b.usage - a.usage);
+  for (const type of Object.keys(byType)) {
+    byType[type].sort((a, b) => b.usage - a.usage);
+    // Cap at 1.0 (100%) — sums can exceed 1.0 when multiple Pokemon share a type
+    prevalence[type] = Math.min(prevalence[type] || 0, 1.0);
+  }
 
   return { prevalence, byType };
 }
@@ -899,19 +903,24 @@ async function analyzeMatchups(team, legalPokemonSet, weatherAnalysis) {
             const spreadBreakdown = [];
             const allSpreadsData = await getCommonSpreads(nameLower);
             const allSpreads = allSpreadsData?.spreads || [];
-            for (const obs of allSpreads.slice(0, 5)) {
+            const seenSpreadKeys = new Set();
+            for (const obs of allSpreads) {
+              const hp = obs.sp?.hp || 0;
+              const def = obs.sp?.def || 0;
+              const spreadKey = `${hp}/${def}`;
+              if (seenSpreadKeys.has(spreadKey)) continue;
+              seenSpreadKeys.add(spreadKey);
               const obsSide = { nature: obs.nature || 'Hardy', evs: spToEvObject(obs.sp), ivs: { hp: 31 } };
               try {
                 const obsDmg = damagePercentRange(member.pokemonRow, attackerSide, candidateRow, obsSide, mv.move, activeWeather);
                 totalSpreads++;
                 const isOhko = obsDmg.min >= 100;
                 if (isOhko) ohkoCount++;
-                const hp = obs.sp?.hp || 0;
-                const def = obs.sp?.def || 0;
                 spreadBreakdown.push({
                   hp, def, dmg: `${obsDmg.min}-${obsDmg.max}%`, ohko: isOhko,
                 });
               } catch (_err) { continue; }
+              if (seenSpreadKeys.size >= 5) break;
             }
 
             const ohkoPercent = totalSpreads > 0 ? Math.round((ohkoCount / totalSpreads) * 100) : 0;
@@ -959,6 +968,7 @@ async function analyzeMatchups(team, legalPokemonSet, weatherAnalysis) {
       for (const member of team) {
         const defenderSide = { nature: member.nature, item: member.item, evs: spToEvObject(member.sp), ivs: { hp: 31 } };
         const maxes = [];
+        const mins = [];
         // FIX 4: save the top spread's attackerSide for weather comparison after the loop
         const topAttackerSide = attackerSpreads[0] ? { nature: attackerSpreads[0].nature || 'Hardy', ability: attackerAbility, item: attackerItem?.item, evs: spToEvObject(attackerSpreads[0].sp), ivs: { hp: 31 } } : null;
         for (const spread of attackerSpreads) {
@@ -968,6 +978,7 @@ async function analyzeMatchups(team, legalPokemonSet, weatherAnalysis) {
             dmg = damagePercentRange(candidateRow, attackerSide, member.pokemonRow, defenderSide, moveEntry.move, activeWeather);
           } catch (_err) { continue; }
           maxes.push(dmg.max);
+          mins.push(dmg.min);
         }
         if (maxes.length === 0) continue;
         const worstCaseMax = Math.max(...maxes);
@@ -1012,7 +1023,7 @@ async function analyzeMatchups(team, legalPokemonSet, weatherAnalysis) {
             attacker_set_frequency: setFrequency ? round(setFrequency * 100, 1) : null,
             attacker_meta_frequency: metaFrequency ? round(metaFrequency * 100, 1) : null,
             rare_set: rareSet,
-            damage_range: `${round(Math.min(...maxes), 1)}-${round(worstCaseMax, 1)}%`,
+            damage_range: `${round(Math.min(...mins), 1)}-${round(worstCaseMax, 1)}%`,
             speed_situation: situation,
             priority,
             weather_note: weatherNote,
