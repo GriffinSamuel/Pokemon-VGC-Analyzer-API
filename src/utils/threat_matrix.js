@@ -3,6 +3,7 @@ const path = require('path');
 const pool = require('../db/pool');
 const { getNatureDistribution, getSpeciesRow } = require('./ev_observations');
 const { calcStat, natureMultiplierFor } = require('./stat_formula');
+const { round } = require('./format');
 
 const MODELS_DIR = path.join(__dirname, '..', 'ml', 'models');
 const TOP_ATTACKERS = 50;
@@ -12,11 +13,6 @@ const TOP_MOVES_PER_ATTACKER = 10;
 const REFRESH_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
 let cache = { data: null, computedAt: 0 };
-
-function round(value, decimals) {
-  const factor = 10 ** decimals;
-  return Math.round(value * factor) / factor;
-}
 
 function readMoveRecommendations() {
   const filePath = path.join(MODELS_DIR, 'move_recommendations.json');

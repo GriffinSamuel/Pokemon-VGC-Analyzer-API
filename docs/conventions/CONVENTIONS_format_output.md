@@ -8,12 +8,7 @@
 // or array: [32, 0, 14, 0, 20, 0]  (hp-atk-def-spa-spd-spe order)
 ```
 
-**`@smogon/calc` boundary:**
-```javascript
-{ hp: 252, atk: 0, def: 108, spa: 0, spd: 156, spe: 0 }  // EVs (0-252)
-```
-
-**`POST /api/damage` input:** Classic EVs (0-252), not SP. This is a thin `@smogon/calc` wrapper by design.
+**`POST /api/damage` input:** Classic EVs (0-252), not SP. Converted to SP internally via `evsToSp()` before reaching CalcDamage.
 
 ---
 

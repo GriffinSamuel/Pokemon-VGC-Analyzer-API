@@ -1,10 +1,6 @@
 const pool = require('../db/pool');
 const { calcStat, natureMultiplierFor } = require('./stat_formula');
-
-function round(value, decimals) {
-  const factor = 10 ** decimals;
-  return Math.round(value * factor) / factor;
-}
+const { round } = require('./format');
 
 // pokemon has zero -Mega rows (documented gap — see CLAUDE.md), so a Mega's
 // normalized_name ("Swampert-Mega") never matches directly. Fall back to

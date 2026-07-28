@@ -13,6 +13,7 @@ const { getMetaContext } = require('../utils/speed_context');
 const { classifyRole } = require('../utils/role_classifier');
 const { scoreSpread } = require('../utils/spread_scorer');
 const { calcStat, natureMultiplierFor, SP_CAP_PER_STAT } = require('../utils/stat_formula');
+const { round } = require('../utils/format');
 const { getSpeciesRow, getNatureDistribution, getMostCommonSpread, getCommonSpeedTiers } = require('../utils/ev_observations');
 
 const MODELS_DIR = path.join(__dirname, '..', 'ml', 'models');
@@ -29,11 +30,6 @@ function readModelJSON(filename) {
   const filePath = path.join(MODELS_DIR, filename);
   if (!fs.existsSync(filePath)) return null;
   return JSON.parse(fs.readFileSync(filePath, 'utf8'));
-}
-
-function round(value, decimals = 4) {
-  const factor = 10 ** decimals;
-  return Math.round(value * factor) / factor;
 }
 
 function extractTeammates(query) {

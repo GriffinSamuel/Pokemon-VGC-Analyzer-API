@@ -11,7 +11,7 @@ X   = floor((base + sp + 20) × alignment)
 
 Where alignment = 1.1 (boosted nature), 1.0 (neutral), 0.9 (hindered).
 
-`spToEv()` converts the boundary: `EV = 8 × SP − 4` for SP≥1, 0 for SP=0. This is the sole bridge to `@smogon/calc`.
+`evsToSp()` converts classic EVs (0-252) from `POST /api/damage` input to SP (0-32) internally. CalcDamage speaks SP natively — no EV conversion at the calc boundary.
 
 **Verified at:** `stat_formula.js:20-36` (`calcStat()`), `stat_formula.js:40-44` (`spToEv()`).
 
@@ -40,11 +40,11 @@ A spread is valid if and only if every stat is in [0, 32] and the total is ≤ 6
 
 ## spToEv Boundary (invariant)
 
-`spToEv()` is called **only** at the boundary before `damage.buildPokemon()` or any `@smogon/calc` call. It is never called on stored SP data, in optimization logic, or in API responses. The entire codebase speaks SP (0-32/stat, 66 total) except the two explicit boundary points:
+All damage calcs use CalcDamage() from `nerd_of_now_calc.js`, which speaks SP (0-32) natively. `evsToSp()` is called only at the `POST /api/damage` API boundary to convert classic EV inputs. The entire codebase speaks SP (0-32/stat, 66 total) except this single API input boundary:
 - `damage.buildPokemon()` converts SP→EV at construction time
 - `POST /api/damage` accepts classic EVs directly (intentional thin wrapper)
 
-**Verified at:** `damage.js:22-26` (`buildPokemon` converts via `spToEv`), `spread_scorer.js` (all `@smogon/calc` calls pass EVs converted at the boundary).
+**Verified at:** `damage.js:evsToSp()` (API boundary only), `nerd_of_now_calc.js:CalcDamage()` (SP-native calculator).
 
 ---
 
@@ -139,7 +139,7 @@ This ensures the final spread is the minimum SP that achieves its score. Only ru
 | slow_bulky_support | 3× | 2× | 1× |
 | fast_support | 2× | 3× | 1× |
 
-These affect spread selection in the greedy system, not the `@smogon/calc` output.
+These affect spread selection in the greedy system, not the CalcDamage output.
 
 ---
 

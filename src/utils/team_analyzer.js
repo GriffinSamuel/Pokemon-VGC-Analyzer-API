@@ -5,6 +5,7 @@ const { ALL_TYPES, effectivenessAgainst, weaknessesOf, resistancesOf } = require
 const { generateSynergyReasons } = require('./synergy_reasons');
 const { calcStat, natureMultiplierFor } = require('./stat_formula');
 const { CalcDamage, getMoveData } = require('./nerd_of_now_calc');
+const { round } = require('./format');
 const { getMostCommonSpread, getCommonSpreads, getCommonItems, getCommonSpeedTiers, getSpeciesRow, getTopDamageAffectingItem, DAMAGE_AFFECTING_ITEMS } = require('./ev_observations');
 const { getRealAbilityFrequency } = require('./item_optimizer');
 // getTopAttackerSpreads: the same top-3-real-spreads-worst-case methodology
@@ -28,11 +29,6 @@ const STRONG_SYNERGY_THRESHOLD = 1.5; // matches synergy_reasons.js's own docume
 const WEATHER_SETTERS = {
   Drizzle: 'Rain', Drought: 'Sun', 'Sand Stream': 'Sandstorm', 'Snow Warning': 'Snow',
 };
-
-function round(value, decimals = 4) {
-  const factor = 10 ** decimals;
-  return Math.round(value * factor) / factor;
-}
 
 // --- FIX 11: Champions M-B legal/observed Pokemon set -----------------------------
 // "Legal" here means "actually observed in this format's real tournament data",

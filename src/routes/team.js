@@ -13,6 +13,7 @@ const {
 } = require('../utils/item_optimizer');
 const { getOrComputeEvolutionarySpread } = require('../utils/ev_optimizer');
 const { getNerdOfNowSets } = require('../utils/nerd_of_now');
+const { round } = require('../utils/format');
 const {
   getTypeMetaData, analyzeCoverage, analyzeSynergies, analyzeWeather,
   analyzeTrickRoom, analyzeSpeedTiers, analyzeWeaknesses, analyzeArchetypeMatchups,
@@ -367,11 +368,6 @@ router.post('/compare', async (req, res, next) => {
 // matchups. Every piece reuses an existing utility (role_classifier.js,
 // item_optimizer.js, recommend.js's getMoveRecommendationsFor, ev_optimizer.js,
 // team_analyzer.js) — nothing here reimplements move/EV/synergy/damage logic.
-
-function round(value, decimals = 4) {
-  const factor = 10 ** decimals;
-  return Math.round(value * factor) / factor;
-}
 
 function readJSON(filename) {
   const filePath = path.join(__dirname, '..', 'ml', 'models', filename);

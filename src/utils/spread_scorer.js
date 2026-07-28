@@ -8,6 +8,7 @@ const { itemBreakpointBonus, OFFENSIVE_ROLES } = require('./item_optimizer');
 const { classifyRole } = require('./role_classifier');
 const { CalcDamage, getMoveData } = require('./nerd_of_now_calc');
 const { effectivenessAgainst } = require('./typeChart');
+const { round } = require('./format');
 
 // Items @smogon/calc already models natively (Choice Scarf's 1.5x Speed, Choice
 // Band/Specs'/Life Orb's damage multipliers + Life Orb recoil, Assault Vest's
@@ -187,11 +188,6 @@ const OFFENSIVE_TIER_FACTORS = {
   3: { 0: 0.7, 1: 0.7 },      // baseline 4HKO -> OHKO or 2HKO
   4: { 0: 0.6, 1: 0.6 },      // baseline no_ko -> OHKO or 2HKO
 };
-
-function round(value, decimals = 4) {
-  const factor = 10 ** decimals;
-  return Math.round(value * factor) / factor;
-}
 
 function clamp(x, lo, hi) {
   return Math.max(lo, Math.min(hi, x));
