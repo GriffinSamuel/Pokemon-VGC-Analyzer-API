@@ -84,3 +84,45 @@ A follow-up task's own investigation steps were run for real before any fix. Two
 - FIX 14: TR matchup focuses on Prankster Taunt prevention.
 - FIX 15: Quick fix recommendations for unfavorable matchups.
 - 69 tests.
+
+---
+
+## Development Plan Status (preserved from CLAUDE.md, moved here 2026-07-24)
+- ✅ Week 1-6 — Database, scrapers, damage calc, ML models, team import, rate limiting, CI
+- ✅ Post-Week-6 — Recommendation Engine v2 (SP-native), role classification, speed context, text formatter
+- ✅ Evolutionary spread search — `spread_scorer.js` + `spread_optimizer.js` (GA: 200→300 init, 40→60 gen, local search, breakpoint tiebreak)
+- ✅ Team Builder — `POST /api/team/build` with worker_threads parallelism, item optimization, matchup analysis
+- ✅ Mega forms — Real dex-sourced stats for 90 forms in `pokemon` table, correct item mapping
+- ✅ Correctness passes — Worst-case KO classification, aggression multipliers, locked stats, speed-OHKO link, TR viability gate
+- ✅ Nerd of Now seeded initialization — 305 Pokemon, 491 expert sets
+- ✅ Team builder output fixes — 15 fixes covering abilities, OHKOs, builds, coverage, matchups
+
+---
+
+## Architecture Documentation System (2026-07-24)
+
+Built a sharded architecture documentation system in `docs/architecture/`:
+
+- 11 `ARCHITECTURE_*.md` shards covering all subsystems
+- `INDEX.md` with one-line summaries routing to the right shard
+- CLAUDE.md trimmed from ~28k to 12.2k, keeping only always-on essentials
+- CLAUDE_1.md deleted (stale snapshot of CLAUDE.md from ~Week 4)
+- Inconsistency catalogue expanded from 6 to 11 entries (1 P0, 4 P1, 6 P2)
+
+All 50 source files read in full during the documentation pass. Every fact in the architecture docs was verified against actual code.
+
+---
+
+## Conventions Documentation System (2026-07-24)
+
+Built a conventions documentation system in `docs/conventions/`:
+
+- 4 `CONVENTIONS_*.md` docs: sp_system, damage_calc, format_output, inconsistencies
+- `INDEX.md` with standing note that structure lives in graphify, conventions live here
+- CLAUDE.md expanded from 12.2k to 15.5k with conventions reference + 8 critical inline invariants
+- CLAUDE_1.md was already deleted in prior session
+- Graphify partially initialized (stat-index.json exists, no graph.json or report)
+
+Content covers: SP formulas/caps/enforcement, marginal-value guard, Focus Sash rule, spToEv boundary, locked offensive stats, fast-role speed-first allocation, SP minimization, weather application order, Weather Ball rules, recoil convention, aggression multiplier, TYPE_VALUES, threshold format, Why block assembly, secondary interactions, Mega naming, build labels, inconsistency catalogue.
+
+All 50 source files read in full. Every invariant verified against actual code.

@@ -17,7 +17,6 @@ const {
 
 const HIGH_USAGE_THRESHOLD = 10; // percent, for offensive-threshold targets
 const MIN_THREAT_WEIGHT = 0.05; // skip negligible attacker+move combos — bounds calc.calculate() calls per request
-const STAT_LABELS = { hp: 'HP', atk: 'Atk', def: 'Def', spa: 'SpA', spd: 'SpD', spe: 'Spe' };
 const TRICKROOM_PREVALENCE_THRESHOLD = 0.25;
 const TRICKROOM_ROLES = new Set(['slow_bulky_offense', 'slow_bulky_support']);
 
@@ -53,7 +52,7 @@ const ROLE_MULTIPLIERS = {
   },
 };
 
-// Spread ordering + 3rd-spread renaming per role. The underlying build*Spread()
+// Spread ordering + display label per role. The underlying spread-building
 // functions never change — only display order/label depends on role.
 const SPREAD_PLAN_BY_ROLE = {
   fast_offense: [['Optimized', 'Optimized'], ['Survival-focused', 'Survival-focused'], ['Offensive-focused', 'Offensive-focused']],
@@ -219,7 +218,7 @@ async function findDefensiveThresholds(defenderRow, threatMatrix, overrides) {
     const statKey = moveRow.category === 'Physical' ? 'def' : 'spd';
     const calcMove = new calc.Move(damage.gen, threat.move);
 
-    // FIX 4/6: Marginal value check — compute whether defender already survives
+    // Marginal value check — compute whether defender already survives
     // this attack at 0 SP. If it does, the threshold provides zero marginal value.
     let survivalWithoutInvestment = false;
     try {
@@ -327,13 +326,6 @@ async function findSpeedThresholds(defenderRow, threatMatrix, overrides, role) {
         final_speed: found.stat,
         opponent_frequency: tier.frequency,
         is_speed_tie: isTie,
-        // This base tier only tells the full story for the fraction of this species
-        // NOT running Scarf/its boosting ability — surfaced here (not a score change,
-        // display only) so the text/JSON output can note it; the Scarf/ability-boost
-        // profile itself is a separate entry generated below. Both percentages are
-        // independently-sourced measurements (ev_observations item field vs.
-        // tournament_teams ability field) from different, non-row-linked samples —
-        // never combined into a single fabricated joint distribution.
         scarf_frequency: modifiers?.scarf_common ? modifiers.scarf_frequency : null,
         ability_boost_frequency: showAbilityBoost ? modifiers.ability_boost_frequency : null,
         ability_label: abilityLabel,
@@ -348,9 +340,7 @@ async function findSpeedThresholds(defenderRow, threatMatrix, overrides, role) {
 
   // SCARF + ABILITY-BOOST profiles — mutually exclusive build archetypes (a Scarf
   // holder isn't also relying on a Speed-boosting ability), so each is generated and
-  // labeled independently rather than combined into one flag. Both reachable (met)
-  // and unreachable (always-skipped, tagged so optimizeEvs() surfaces them in every
-  // spread regardless of that spread's own threshold pool) cases are recorded.
+  // labeled independently rather than combined into one flag.
   for (const threat of topAttackers) {
     const modifiers = modifiersByAttacker[threat.attacker.toLowerCase()];
     if (!modifiers) continue;
@@ -379,19 +369,12 @@ async function findSpeedThresholds(defenderRow, threatMatrix, overrides, role) {
           score: round(TYPE_VALUES.speed_tier * threat.weight * natureReliability, 4),
         });
       } else {
-        // Unreachable within the 66 SP budget regardless of priority — always
-        // visible in thresholds_skipped (see optimizeEvs), never competes for budget.
-        // `attacker`/`stat`/`sp_investment` are populated (even though this entry
-        // never enters greedyAssign) so raw-threshold consumers like recommend.js's
-        // attachSpeedNatures() — which runs across the full unfiltered list before
-        // any "met" filtering — don't crash on missing fields.
+        // Unreachable within the 66 SP budget regardless of priority
         thresholds.push({
           type: 'speed',
           threshold_type: 'speed_tier',
           attacker: threat.attacker,
           stat: 'spe',
-          // Infinity, not null: recommend.js's `met = spreadSp[t.stat] >= t.sp_investment`
-          // check would coerce a null RHS to 0 and wrongly read as "already met".
           sp_investment: Infinity,
           opponent_speed: scarfSpeed,
           score: round(TYPE_VALUES.speed_tier * threat.weight * natureReliability, 4),
@@ -401,9 +384,6 @@ async function findSpeedThresholds(defenderRow, threatMatrix, overrides, role) {
       }
     }
 
-    // Only surfaced when BOTH the weather/condition is commonly active in the meta
-    // (condition_common) AND this species commonly runs the boosting ability at all
-    // (ability_boost_frequency >= 10% — e.g. Swift Swim vs. Adaptability Basculegion).
     if (modifiers.ability_boost && modifiers.condition_common && modifiers.ability_boost_frequency >= ABILITY_PROFILE_FREQUENCY_THRESHOLD) {
       const abilityLabel = modifiers.ability_boost.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
       const boostedSpeed = modifiers.effective_speed_boosted;
@@ -445,9 +425,7 @@ async function findSpeedThresholds(defenderRow, threatMatrix, overrides, role) {
     }
   }
 
-  // MIRROR MATCHUPS — the same species can itself be a real speed threat when it's
-  // also a common tournament Pokemon; weighted at half the usual rate since you only
-  // face the mirror in the (roughly) half of games where both sides run it.
+  // MIRROR MATCHUPS
   const selfEntry = threatMatrix.find((t) => t.attacker.toLowerCase() === defenderRow.name.toLowerCase());
   if (selfEntry) {
     const { tiers: mirrorTiers } = await getCommonSpeedTiers(defenderRow.name.toLowerCase());
@@ -455,7 +433,7 @@ async function findSpeedThresholds(defenderRow, threatMatrix, overrides, role) {
     for (const tier of mirrorTiers.slice(0, 3)) {
       if (tier.speed_stat === null) continue;
       const found = findMinSpForStat(tier.speed_stat + 1, defenderRow.spe, alignment, false);
-      if (!found) continue; // consistent with normal tiers: unreachable mirror tiers are silently omitted, not flagged
+      if (!found) continue;
 
       const mirrorWeight = round(selfEntry.attacker_usage * tier.frequency * 0.5, 4);
       thresholds.push({
@@ -478,10 +456,7 @@ async function findSpeedThresholds(defenderRow, threatMatrix, overrides, role) {
   }
 
   // TRICK ROOM speed tiers — only for slow bulky roles, and only when TR is common
-  // enough in the meta to matter. A Pokemon is TR-relevant against a threat when its
-  // OWN (0 SP) speed is already below that threat's — there's no "investing more SP"
-  // that helps here (more Speed only makes Trick Room worse), so these are always
-  // recorded at sp_investment 0 (a free, already-true fact, never competing for budget).
+  // enough in the meta to matter.
   if (role && TRICKROOM_ROLES.has(role)) {
     const metaContext = await getMetaContext();
     if (metaContext.trickroom_prevalence > TRICKROOM_PREVALENCE_THRESHOLD) {
@@ -490,7 +465,7 @@ async function findSpeedThresholds(defenderRow, threatMatrix, overrides, role) {
         const natureReliability = threat.nature_reliability ?? 0.5;
         for (const tier of tiers.slice(0, 2)) {
           if (tier.speed_stat === null) continue;
-          if (!trickroomRelevant(baselineSpeed, tier.speed_stat)) continue; // already too fast even at 0 SP
+          if (!trickroomRelevant(baselineSpeed, tier.speed_stat)) continue;
 
           thresholds.push({
             type: 'speed',
@@ -614,226 +589,12 @@ async function findOffensiveThresholds(defenderRow, ownTopMoves, ownMovesByLower
   return thresholds;
 }
 
-function describeThresholdLabel(t) {
-  if (t.type === 'defensive') return `${t.attacker} ${t.move}`;
-  if (t.type === 'speed') return t.benchmark;
-  return `${t.threshold_type === 'OHKO_achieved' ? 'OHKO' : '2HKO'} on ${t.target} with ${t.move}`;
-}
 
-function toMetEntry(t) {
-  const base = { threshold_type: t.threshold_type, type_value: t.type_value, base_weight: t.base_weight, nature_reliability: t.nature_reliability, score: t.score };
-  if (t.type === 'defensive') return { survives: describeThresholdLabel(t), nature_note: t.nature_note, ...base };
-  if (t.type === 'speed') return { benchmark: t.benchmark, required_spe_sp: t.sp_investment, final_speed: t.final_speed, opponent_frequency: t.opponent_frequency, ...base };
-  return { achieves: describeThresholdLabel(t), target_usage: t.target_usage, move_confidence: t.move_confidence, ...base };
-}
-
-function toSkippedEntry(t, reason) {
-  const key = t.type === 'defensive' ? 'would_survive' : t.type === 'speed' ? 'would_outrun' : 'would_achieve';
-  return { [key]: describeThresholdLabel(t), threshold_type: t.threshold_type, score: t.score, reason };
-}
-
-// Scarf/ability-boost speed profiles that are unreachable within the 66 SP budget
-// regardless of priority — these never had a `benchmark`/`attacker` populated (see
-// findSpeedThresholds), so describeThresholdLabel() can't build a description for
-// them the way toSkippedEntry() does; the _skipReason string IS the full description.
-// always_skipped marks these for recommend.js's text formatter to render as
-// `✗ {reason}` directly instead of the generic "-- TIER (score, budget exhausted)".
-function toAlwaysSkippedEntry(t) {
-  return { threshold_type: t.threshold_type, score: t.score, reason: t._skipReason, always_skipped: true };
-}
-
-// Applies a threshold's required SP to `sp` if there's budget for the delta above
-// whatever's already invested in that stat (a stronger, already-applied threshold on
-// the same stat can make a weaker one free). Mutates `sp`, does not mutate `remaining`.
-function applyThreshold(t, sp, remaining) {
-  const statKey = t.stat;
-  const needed = t.sp_investment;
-  if (sp[statKey] >= needed) return { applied: true, spent: 0, alreadyMet: true };
-  const additional = needed - sp[statKey];
-  if (additional > remaining) return { applied: false, spent: 0, alreadyMet: false };
-  sp[statKey] = needed;
-  return { applied: true, spent: additional, alreadyMet: false };
-}
-
-function noteForStat(statKey, spValue, defenderRow, overrides, reasonSuffix) {
-  const isHp = statKey === 'hp';
-  const alignment = isHp ? 1.0 : natureMultiplierFor(overrides.nature, statKey);
-  const stat = calcStat(defenderRow[statKey], spValue, alignment, isHp);
-  return `${spValue} ${STAT_LABELS[statKey]} SP — hits breakpoint at ${stat} ${STAT_LABELS[statKey]}${reasonSuffix ? ` (minimum to ${statKey === 'spe' ? 'outrun' : 'survive'} ${reasonSuffix})` : ''}`;
-}
-
-function greedyAssign(thresholdPool, sp, remaining, defenderRow, overrides, notes, met, skipped, speedBenchmarks) {
-  const sorted = [...thresholdPool].sort((a, b) => b.score - a.score);
-  for (const rawT of sorted) {
-    // REGRESSION C: skip thresholds where the Pokemon already survives at 0 SP
-    if (rawT.survival_without_investment) {
-      skipped.push(toSkippedEntry(rawT, 'already survives at 0 SP — no investment needed'));
-      continue;
-    }
-    // REGRESSION D: Focus Sash holders get heavily down-weighted (0.1x) for
-    // OHKO prevention — sash absorbs one hit, so investing SP to prevent that
-    // same OHKO is wasteful. 2HKO/3HKO prevention still matters (sash doesn't
-    // absorb follow-up hits). Per interview Q5: heavily down-weighted, not excluded.
-    const isSashOhko = rawT.threshold_type === 'ohko_prevented' && (overrides.item || '').toLowerCase() === 'focus sash';
-    const t = isSashOhko ? { ...rawT, score: rawT.score * 0.1 } : rawT;
-    const { applied, spent, alreadyMet } = applyThreshold(t, sp, remaining);
-    if (applied) {
-      remaining -= spent;
-      met.push(toMetEntry(t));
-      if (t.type === 'speed') speedBenchmarks.push(toMetEntry(t));
-      if (!alreadyMet && spent > 0) {
-        notes.push(noteForStat(t.stat, sp[t.stat], defenderRow, overrides, describeThresholdLabel(t)));
-      }
-    } else {
-      skipped.push(toSkippedEntry(t, 'SP budget exhausted'));
-    }
-  }
-  return remaining;
-}
-
-// HP benefits every defensive threshold at once rather than the one being
-// explicitly optimized — a documented heuristic, not something re-derived from the
-// threat matrix. Spends up to 30% of what's left.
-function allocateHpRemainder(sp, remaining, defenderRow, overrides, notes) {
-  if (remaining <= 0) return remaining;
-  const hpBudget = Math.floor(remaining * 0.3);
-  if (hpBudget <= 0) return remaining;
-  const aligned = snapToBreakpoint(sp.hp + hpBudget, defenderRow.hp, 1.0, true);
-  const spent = aligned.sp - sp.hp;
-  if (spent <= 0) return remaining;
-  sp.hp = aligned.sp;
-  notes.push(`${aligned.sp} HP SP — hits breakpoint at ${aligned.stat} HP`);
-  return remaining - spent;
-}
-
-function allocateStatRemainder(statKey, sp, remaining, defenderRow, overrides, notes, label) {
-  const capRemaining = Math.max(SP_CAP_PER_STAT - sp[statKey], 0);
-  const budget = Math.min(remaining, capRemaining);
-  if (budget <= 0) return remaining;
-  const alignment = natureMultiplierFor(overrides.nature, statKey);
-  const aligned = snapToBreakpoint(sp[statKey] + budget, defenderRow[statKey], alignment, false);
-  const spent = aligned.sp - sp[statKey];
-  if (spent <= 0) return remaining;
-  sp[statKey] = aligned.sp;
-  notes.push(`${aligned.sp} ${STAT_LABELS[statKey]} SP — hits breakpoint at ${aligned.stat} ${STAT_LABELS[statKey]}${label ? ` (${label})` : ''}`);
-  return remaining - spent;
-}
-
-function finalizeSpread(label, sp, notes, met, skipped, speedBenchmarks, remaining) {
-  if (remaining > 0) notes.push(`${remaining} SP left unspent — no further breakpoint benefit available within budget`);
-  const totalSp = Object.values(sp).reduce((a, b) => a + b, 0);
-  return {
-    label,
-    sp,
-    total_sp: totalSp,
-    thresholds_met: met,
-    thresholds_skipped: skipped,
-    speed_benchmarks: speedBenchmarks,
-    sp_notes: notes,
-  };
-}
-
-// Spread 1: greedily invest from the highest-scoring threshold downward across
-// ALL threshold types (defensive + speed + offensive), breakpoint-snapped, then
-// spend remaining budget on HP, the primary offensive stat, then Speed.
-function buildOptimizedSpread(defenderRow, allThresholds, offensiveStat, overrides) {
-  const sp = { hp: 0, atk: 0, def: 0, spa: 0, spd: 0, spe: 0 };
-  const notes = [];
-  const met = [];
-  const skipped = [];
-  const speedBenchmarks = [];
-  let remaining = SP_BUDGET_TOTAL;
-
-  remaining = greedyAssign(allThresholds, sp, remaining, defenderRow, overrides, notes, met, skipped, speedBenchmarks);
-  remaining = allocateHpRemainder(sp, remaining, defenderRow, overrides, notes);
-  remaining = allocateStatRemainder(offensiveStat, sp, remaining, defenderRow, overrides, notes, 'remaining budget');
-  remaining = allocateStatRemainder('spe', sp, remaining, defenderRow, overrides, notes, 'remaining budget');
-
-  return finalizeSpread('Optimized', sp, notes, met, skipped, speedBenchmarks, remaining);
-}
-
-// Spread 2: defensive + speed thresholds only (no offensive-vs-target thresholds
-// considered), remainder to the primary offensive stat.
-function buildSurvivalSpread(defenderRow, allThresholds, offensiveStat, overrides) {
-  const sp = { hp: 0, atk: 0, def: 0, spa: 0, spd: 0, spe: 0 };
-  const notes = [];
-  const met = [];
-  const skipped = [];
-  const speedBenchmarks = [];
-  let remaining = SP_BUDGET_TOTAL;
-
-  const pool_ = allThresholds.filter((t) => t.type === 'defensive' || t.type === 'speed');
-  remaining = greedyAssign(pool_, sp, remaining, defenderRow, overrides, notes, met, skipped, speedBenchmarks);
-  remaining = allocateHpRemainder(sp, remaining, defenderRow, overrides, notes);
-  remaining = allocateStatRemainder(offensiveStat, sp, remaining, defenderRow, overrides, notes, 'remaining budget');
-
-  return finalizeSpread('Survival-focused', sp, notes, met, skipped, speedBenchmarks, remaining);
-}
-
-// Spread 3: maximize the primary offensive stat first, then invest the minimum
-// SP for only the single highest-scoring defensive threshold, then Speed. No HP.
-function buildOffensiveSpread(defenderRow, allThresholds, offensiveStat, overrides) {
-  const sp = { hp: 0, atk: 0, def: 0, spa: 0, spd: 0, spe: 0 };
-  const notes = [];
-  const met = [];
-  const skipped = [];
-  let remaining = SP_BUDGET_TOTAL;
-
-  const alignment = natureMultiplierFor(overrides.nature, offensiveStat);
-  const maxAligned = snapToBreakpoint(Math.min(remaining, SP_CAP_PER_STAT), defenderRow[offensiveStat], alignment, false);
-  sp[offensiveStat] = maxAligned.sp;
-  remaining -= maxAligned.sp;
-  notes.push(`${maxAligned.sp} ${STAT_LABELS[offensiveStat]} SP — hits breakpoint at ${maxAligned.stat} ${STAT_LABELS[offensiveStat]} (maximized first for Offensive-focused)`);
-
-  const topDefensive = [...allThresholds].filter((t) => t.type === 'defensive').sort((a, b) => b.score - a.score)[0];
-  if (topDefensive) {
-    const { applied, spent } = applyThreshold(topDefensive, sp, remaining);
-    if (applied) {
-      remaining -= spent;
-      met.push(toMetEntry(topDefensive));
-      if (spent > 0) notes.push(noteForStat(topDefensive.stat, sp[topDefensive.stat], defenderRow, overrides, describeThresholdLabel(topDefensive)));
-    } else {
-      skipped.push(toSkippedEntry(topDefensive, 'SP budget exhausted after maximizing the offensive stat'));
-    }
-  }
-
-  remaining = allocateStatRemainder('spe', sp, remaining, defenderRow, overrides, notes, 'remaining budget');
-
-  return finalizeSpread('Offensive-focused', sp, notes, met, skipped, [], remaining);
-}
-
-// --- Evolutionary (real-damage-calc) spread search, layered on top of the greedy
-// threshold system above ---------------------------------------------------------
-// The genetic search in spread_optimizer.js/spread_scorer.js is expensive (tens of
-// seconds to a few minutes even with heavy caching — it runs hundreds to
-// thousands of real @smogon/calc evaluations). It is never awaited inline on a
-// request: a cache miss kicks it off in the background and the caller gets the
-// (already-fast, already-correct) greedy spreads immediately; a cache hit swaps
-// the greedy SP allocation for the evolutionary one. This is why the greedy
-// algorithm above is kept, not replaced — it's the permanent fallback path, not
-// a temporary bridge.
+// --- Evolutionary (real-damage-calc) spread search --------------------------------
 const EVOLUTIONARY_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const evolutionaryCache = new Map(); // `${pokemonLower}|${natureLower}|${itemLower}` -> { computedAt, result }
 const evolutionaryInFlight = new Map(); // same key -> in-progress Promise, de-dupes concurrent triggers
 
-// `item` is optional (defaults to a stable 'default' segment) so every existing
-// caller that only ever dealt in pokemon+nature — GET /api/recommend/evs and its
-// /validate sibling — keeps resolving to the exact same key it always has;
-// POST /api/team/build is the first caller that actually varies it, since a
-// Pokemon's optimal spread genuinely differs by assigned item (Choice Scarf vs.
-// Leftovers change what Speed/SpD investment is even worth scoring highly — see
-// spread_scorer.js).
-// `teamBuild` (FIX 3) is included in the key so a team-build request's deeper
-// (300/60/±8) search and an individual request's normal (200/40/±5) search for
-// the same pokemon+nature+item never collide in the shared evolutionaryCache —
-// otherwise whichever ran first would silently serve its own search depth to
-// the other caller instead of the depth it actually asked for.
-// SCORER_VERSION (spread_scorer.js) is folded in here so a scoring-formula change
-// (aggression_multiplier/TYPE_VALUES/etc.) automatically invalidates every stale
-// cached result instead of silently serving pre-change scores — no manual cache
-// clear or server restart required. A prior task explicitly asked for this same
-// wiring but was scoped to a single file that didn't include ev_optimizer.js;
-// this task has no such restriction, so it's now real and load-bearing.
 function evolutionaryCacheKey(pokemonLower, nature, item, teamBuild = false) {
   return `${pokemonLower}|${(nature || 'default').toLowerCase()}|${(item || 'default').toLowerCase()}|${teamBuild ? 'team' : 'solo'}|v${SCORER_VERSION}`;
 }
@@ -845,25 +606,6 @@ function getEvolutionaryStatus(pokemonLower, nature, item, teamBuild = false) {
     return { status: 'optimal', key, result: cached.result };
   }
   return { status: 'computing', key, result: null };
-}
-
-// Fire-and-forget: errors are swallowed (logged) rather than thrown, since this
-// runs detached from any request/response cycle — the greedy fallback stays
-// authoritative for this pokemon+nature until a future request retries and
-// succeeds. Never runs two computations for the same key concurrently.
-function triggerEvolutionaryComputation(key, pokemon, nature, role, threatMatrix, metaContext, observationCount, item, teamBuild = false, fieldOpts) {
-  if (evolutionaryInFlight.has(key)) return;
-  const promise = findOptimalSpread(pokemon, nature, role, threatMatrix, metaContext, observationCount, item, teamBuild, null, fieldOpts)
-    .then((result) => {
-      evolutionaryCache.set(key, { computedAt: Date.now(), result });
-    })
-    .catch(() => {
-      // swallowed — greedy fallback remains authoritative; a later request re-triggers
-    })
-    .finally(() => {
-      evolutionaryInFlight.delete(key);
-    });
-  evolutionaryInFlight.set(key, promise);
 }
 
 function categoryContributionSum(evoSpread, category) {
@@ -880,7 +622,7 @@ function pickDistinctBy(candidates, used, scoreFn) {
   return sorted.find((c) => !used.has(c)) || sorted[0];
 }
 
-// Maps the evolutionary top 5 to the same 3 named roles the greedy spreads use:
+// Maps the evolutionary top 5 to the same 3 named display slots:
 // "Optimized" = best overall score (rank 1, real damage-calc based); "Survival-
 // focused" = highest defensive-category contribution; "Offensive-focused" =
 // highest offensive+speed-category contribution. All three distinct where possible.
@@ -902,151 +644,90 @@ function mapEvolutionaryToDisplaySpreads(evolutionarySpreads) {
   return { Optimized: optimized, 'Survival-focused': survival, 'Offensive-focused': offensive };
 }
 
-// Swaps a greedy-built raw spread's SP allocation for the evolutionary one.
-// thresholds_skipped is trimmed to just the allocation-independent _alwaysSkipped
-// entries (Scarf/ability-boost budget-unreachable — see design decisions) since
-// the greedy "budget exhausted" skip entries were decided under a DIFFERENT SP
-// allocation and would be stale/misleading if left attached to this one; sp_notes
-// is likewise replaced with a single line pointing at the real evaluation instead
-// of the greedy breakpoint-by-breakpoint justifications, which no longer apply.
-function applyEvolutionaryOverride(rawSpread, evoSpread, alwaysSkipped) {
-  return {
-    ...rawSpread,
-    sp: evoSpread.sp,
-    total_sp: evoSpread.total_sp,
-    thresholds_skipped: [...alwaysSkipped],
-    sp_notes: [
-      `Evolutionary search (real @smogon/calc evaluation): score ${evoSpread.score} — ${(evoSpread.thresholds_met || []).length} real thresholds met, ${(evoSpread.thresholds_missed || []).length} missed`,
-    ],
-    evolutionary_score: evoSpread.score,
-    evolutionary_thresholds_met: evoSpread.thresholds_met,
-    evolutionary_thresholds_missed: evoSpread.thresholds_missed,
-  };
-}
-
+// --- optimizeEvs: returns evolutionary spreads via the same cache/team-build
+// infrastructure that POST /api/team/build uses. On a cold start (no cached
+// evolutionary result), this AWaits the full GA search inline — slower than the
+// old greedy fallback, but the user confirmed this endpoint is not used
+// interactively. ---------------------------------------------------------------
 async function optimizeEvs(pokemonName, overrides = {}) {
-  const { rows } = await pool.query('SELECT * FROM pokemon WHERE LOWER(name) = LOWER($1)', [pokemonName]);
-  if (rows.length === 0) return null;
-  const defenderRow = rows[0];
+  // Delegate directly to getOrComputeEvolutionarySpread, which handles all
+  // setup (pokemon lookup, role classification, threat matrix loading), cache
+  // lookups, and — on cold start — awaiting the full GA search inline.
+  const evoResult = await getOrComputeEvolutionarySpread(pokemonName, overrides);
+  if (!evoResult) return null;
 
-  // Role classification happens first — everything downstream (threshold scoring,
-  // spread order/labels) depends on it.
-  const roleResult = await classifyRole(pokemonName);
-  const role = roleResult.role;
+  const { pokemon, pokemonRow, role, roleResult, metaContext, result, seeds_used } = evoResult;
 
-  const moveRecPath = path.join(__dirname, '..', 'ml', 'models', 'move_recommendations.json');
-  let ownTopMoves = [];
-  if (fs.existsSync(moveRecPath)) {
-    const moveRec = JSON.parse(fs.readFileSync(moveRecPath, 'utf8'));
-    ownTopMoves = moveRec.pokemon[pokemonName.toLowerCase()]?.moves?.slice(0, 4) || [];
-  }
-  const ownMoveNames = ownTopMoves.map((m) => m.move.toLowerCase());
-  const { rows: ownMoveRows } = ownMoveNames.length
-    ? await pool.query('SELECT * FROM moves WHERE LOWER(name) = ANY($1)', [ownMoveNames])
-    : { rows: [] };
-  const ownMovesByLower = Object.fromEntries(ownMoveRows.map((m) => [m.name.toLowerCase(), m]));
-  const offensiveStat = inferOffensiveStat(defenderRow, ownTopMoves, ownMovesByLower);
-  const offensiveRole = offensiveStat === 'atk' ? 'physical_attacker' : 'special_attacker';
+  // Derive offensive_role from base stats (simplified — the evolutionary search
+  // handles move-specific optimization internally, so a simple stat comparison
+  // is sufficient for the display-level offensive_role field).
+  const offensiveRole = (pokemonRow?.atk || 0) >= (pokemonRow?.spa || 0) ? 'physical_attacker' : 'special_attacker';
 
-  const [threatMatrix, metaContext] = await Promise.all([getThreatMatrix(), getMetaContext()]);
-
-  const [defensiveThresholds, speedThresholds, offensiveThresholds, observationCount] = await Promise.all([
-    findDefensiveThresholds(defenderRow, threatMatrix, overrides),
-    findSpeedThresholds(defenderRow, threatMatrix, overrides, role),
-    findOffensiveThresholds(defenderRow, ownTopMoves, ownMovesByLower, overrides),
-    getObservationCount(pokemonName.toLowerCase()),
-  ]);
-
-  let allThresholds = [...defensiveThresholds, ...speedThresholds, ...offensiveThresholds];
-  // Role multipliers scale the existing score only — see applyRoleMultipliers.
-  allThresholds = applyRoleMultipliers(allThresholds, role);
-
-  // Scarf/ability-boost speed profiles that are mathematically unreachable within
-  // the 66 SP budget never compete for budget in any spread's greedyAssign() —
-  // pulled out here and appended to EVERY spread's thresholds_skipped uniformly,
-  // rather than depending on whichever spread-building function happens to call
-  // greedyAssign() at all (buildOffensiveSpread doesn't, which is why these were
-  // silently vanishing from that one spread before this fix).
-  const alwaysSkipped = allThresholds.filter((t) => t._alwaysSkipped).map(toAlwaysSkippedEntry);
-  allThresholds = allThresholds.filter((t) => !t._alwaysSkipped);
-
-  // A concrete nature is required to run/cache the evolutionary search even when
-  // the caller didn't supply one — same 3-tier fallback chain the rest of the
-  // recommendation engine already uses (ev_observations primary nature -> mixed ->
-  // neutral "Hardy"), not a new assumption invented for this feature.
-  const evoNature = overrides.nature || (await getNatureDistribution(pokemonName.toLowerCase())).primaryNature || 'Hardy';
-  const evoItem = overrides.item || null;
-  const evoStatus = getEvolutionaryStatus(pokemonName.toLowerCase(), evoNature, evoItem);
-  triggerEvolutionaryComputation(evoStatus.key, defenderRow, evoNature, role, threatMatrix, metaContext, observationCount, evoItem, false, overrides.fieldOpts);
-
-  const baseResult = {
-    pokemon: defenderRow.name,
-    offensive_role: offensiveRole,
-    role,
-    role_confidence: roleResult.confidence,
-    role_signals: roleResult.signals,
-    meta_context: metaContext,
-    sp_observations: observationCount,
-    sp_budget: SP_BUDGET_TOTAL,
-    spread_status: evoStatus.status, // 'optimal' | 'computing' — mirrored onto the X-Spread-Status response header
-  };
-
-  if (allThresholds.length === 0) {
-    return { ...baseResult, spreads: [], thresholds_found: 0 };
+  if (!result || !result.spreads || result.spreads.length === 0) {
+    return {
+      pokemon,
+      offensive_role: offensiveRole,
+      role,
+      role_confidence: roleResult?.confidence || 0,
+      role_signals: roleResult?.signals || null,
+      spread_status: 'computing',
+      sp_observations: result?.run_stats?.sp_observations || 0,
+      sp_budget: SP_BUDGET_TOTAL,
+      spreads: [],
+      thresholds_found: 0,
+      meta_context: metaContext || null,
+    };
   }
 
-  const rawSpreadsByKey = {
-    Optimized: buildOptimizedSpread(defenderRow, allThresholds, offensiveStat, overrides),
-    'Survival-focused': buildSurvivalSpread(defenderRow, allThresholds, offensiveStat, overrides),
-    'Offensive-focused': buildOffensiveSpread(defenderRow, allThresholds, offensiveStat, overrides),
-  };
-  for (const key of Object.keys(rawSpreadsByKey)) {
-    rawSpreadsByKey[key].thresholds_skipped.push(...alwaysSkipped);
-  }
-
-  // Cache hit: swap each of the 3 displayed spreads' SP allocation for the
-  // evolutionary search's real-damage-calc-optimal one (see
-  // mapEvolutionaryToDisplaySpreads/applyEvolutionaryOverride above). Cache miss:
-  // the greedy spreads built above stand as the immediate-response fallback while
-  // triggerEvolutionaryComputation() runs in the background for next time.
-  if (evoStatus.status === 'optimal' && evoStatus.result?.spreads?.length) {
-    const mapped = mapEvolutionaryToDisplaySpreads(evoStatus.result.spreads);
-    for (const key of Object.keys(rawSpreadsByKey)) {
-      if (mapped[key]) rawSpreadsByKey[key] = applyEvolutionaryOverride(rawSpreadsByKey[key], mapped[key], alwaysSkipped);
-    }
-  }
-
+  // Map evolutionary top-5 spreads to 3 display positions
+  const mapped = mapEvolutionaryToDisplaySpreads(result.spreads);
   const plan = SPREAD_PLAN_BY_ROLE[role] || SPREAD_PLAN_BY_ROLE.fast_offense;
   const rolePriority = ROLE_PRIORITY_TEXT[role] || ROLE_PRIORITY_TEXT.fast_offense;
-  const spreads = plan.map(([originalKey, displayLabel]) => ({
-    ...rawSpreadsByKey[originalKey],
-    label: displayLabel,
-    spread_label: displayLabel,
-    role_priority: rolePriority,
-  }));
 
-  return { ...baseResult, spreads, thresholds_found: allThresholds.length };
+  const spreads = plan.map(([originalKey, displayLabel]) => {
+    const evoSpread = mapped[originalKey];
+    if (!evoSpread) return null;
+    return {
+      sp: evoSpread.sp,
+      total_sp: evoSpread.total_sp,
+      final_stats: evoSpread.final_stats,
+      label: displayLabel,
+      spread_label: displayLabel,
+      role_priority: rolePriority,
+      thresholds_skipped: [],
+      sp_notes: [
+        `Evolutionary search (real @smogon/calc evaluation): score ${evoSpread.score} — ${(evoSpread.thresholds_met || []).length} real thresholds met, ${(evoSpread.thresholds_missed || []).length} missed`,
+      ],
+      evolutionary_score: evoSpread.score,
+      evolutionary_thresholds_met: evoSpread.thresholds_met || [],
+      evolutionary_thresholds_missed: evoSpread.thresholds_missed || [],
+      seeds_used: seeds_used || [],
+    };
+  }).filter(Boolean);
+
+  return {
+    pokemon,
+    offensive_role: offensiveRole,
+    role,
+    role_confidence: roleResult?.confidence || 0,
+    role_signals: roleResult?.signals || null,
+    spread_status: 'optimal',
+    sp_observations: result.run_stats?.sp_observations || 0,
+    sp_budget: SP_BUDGET_TOTAL,
+    spreads,
+    thresholds_found: spreads.length,
+    meta_context: metaContext || null,
+  };
 }
 
 // --- Synchronous-wait variant for POST /api/team/build ---------------------------
-// optimizeEvs() above deliberately never awaits the evolutionary search inline —
-// a cache miss returns the (fast, unchanged) greedy fallback immediately and the
-// search runs in the background for next time. Team building explicitly needs the
-// real, item-aware evolutionary result for every one of 6 Pokemon in the same
-// request (the task's own "run all 6 in parallel via Promise.all to stay under
-// 30s" instruction only makes sense if each one is actually being awaited), so
-// this variant awaits findOptimalSpread() directly on a cache miss instead of
-// firing it in the background — while still reading from and writing to the exact
-// same evolutionaryCache/evolutionaryInFlight every other caller uses, so a normal
-// GET /api/recommend/evs request for the same pokemon+nature+item still benefits
-// from (or contributes to) the same cached result.
 // Runs findOptimalSpread() in a separate worker thread instead of in-process —
-// see evolutionary_worker.js for why: the search is ~19s of genuinely synchronous
-// CPU work, and getOrComputeEvolutionarySpread's whole reason for existing is
-// POST /api/team/build awaiting 6 of these via Promise.all(); Promise.all() alone
-// only interleaves at await points, so 6 in-process calls serialize to ~6x cost
-// (measured: ~115s). A worker per Pokemon gives real OS-thread parallelism, which
-// is what actually gets 6 searches under the endpoint's ~30s budget.
+// the search is ~19s of genuinely synchronous CPU work, and
+// getOrComputeEvolutionarySpread's whole reason for existing is POST /api/team/build
+// awaiting 6 of these via Promise.all(); Promise.all() alone only interleaves at
+// await points, so 6 in-process calls serialize to ~6x cost (measured: ~115s).
+// A worker per Pokemon gives real OS-thread parallelism, which is what actually
+// gets 6 searches under the endpoint's ~30s budget.
 function runEvolutionarySearchInWorker(pokemonRow, nature, role, threatMatrix, metaContext, observationCount, item, teamBuild = false, seeds = null, fieldOpts) {
   return new Promise((resolve, reject) => {
     const workerData = { pokemonRow, nature, role, threatMatrix, metaContext, observationCount, item, teamBuild, fieldOpts };
@@ -1094,16 +775,15 @@ async function getOrComputeEvolutionarySpread(pokemonName, overrides = {}) {
 
   const cached = evolutionaryCache.get(key);
   if (cached && Date.now() - cached.computedAt < EVOLUTIONARY_CACHE_TTL_MS) {
-    return { pokemon: defenderRow.name, pokemonRow: defenderRow, role, roleResult, nature, item, result: cached.result, seeds_used: cached.result?.seeds_used || [], from_cache: true };
+    return { pokemon: defenderRow.name, pokemonRow: defenderRow, role, roleResult, nature, item, metaContext, result: cached.result, seeds_used: cached.result?.seeds_used || [], from_cache: true };
   }
 
-  // Another request (e.g. a concurrent plain GET /api/recommend/evs) may already
-  // have this exact key's search in flight via the background trigger path —
+  // Another request may already have this exact key's search in flight —
   // await that one instead of starting a redundant second search.
   if (evolutionaryInFlight.has(key)) {
     await evolutionaryInFlight.get(key).catch(() => {});
     const nowCached = evolutionaryCache.get(key);
-    if (nowCached) return { pokemon: defenderRow.name, pokemonRow: defenderRow, role, roleResult, nature, item, result: nowCached.result, seeds_used: nowCached.result?.seeds_used || [], from_cache: true };
+    if (nowCached) return { pokemon: defenderRow.name, pokemonRow: defenderRow, role, roleResult, nature, item, metaContext, result: nowCached.result, seeds_used: nowCached.result?.seeds_used || [], from_cache: true };
   }
 
   const promise = runEvolutionarySearchInWorker(defenderRow, nature, role, threatMatrix, metaContext, observationCount, item, teamBuild, overrides.seeds || null, fieldOpts);
@@ -1115,7 +795,7 @@ async function getOrComputeEvolutionarySpread(pokemonName, overrides = {}) {
   } finally {
     evolutionaryInFlight.delete(key);
   }
-  return { pokemon: defenderRow.name, pokemonRow: defenderRow, role, roleResult, nature, item, result, seeds_used: result?.seeds_used || [], from_cache: false };
+  return { pokemon: defenderRow.name, pokemonRow: defenderRow, role, roleResult, nature, item, metaContext, result, seeds_used: result?.seeds_used || [], from_cache: false };
 }
 
 module.exports = {
