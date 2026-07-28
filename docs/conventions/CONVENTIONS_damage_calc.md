@@ -1,28 +1,38 @@
 # Damage Calc Conventions
 
-## Production Calculator: @smogon/calc
+## Single Calculator: nerd_of_now_calc.js
 
-All production damage calculations use `@smogon/calc` (Gen 9). The `nerd_of_now_calc.js` exists as a standalone ported reference but is **not imported by any other module** — it is not used in production paths.
+All damage calculations use `CalcDamage()` from `nerd_of_now_calc.js`. This is a port of the Nerd of Now NCP-VGC-Damage-Calculator, adapted to Champions Stat Point format. `nerd_of_now_calc.js` is fully retired.
 
-**Verified at:** `nerd_of_now_calc.js:1` (no import references in codebase).
+**CalcDamage interface:**
+```javascript
+CalcDamage({
+  attacker: { name, nature, sp, item, ability, baseStats, types },
+  defender: { name, nature, sp, item, ability, baseStats, types },
+  move: { name, type, category, bp, isSpread, makesContact },
+  weather,       // 'Sun' | 'Rain' | 'Sand' | 'Snow' | null
+  terrain,       // 'Electric' | 'Grassy' | 'Misty' | 'Psychic' | null
+  isDouble,      // true for Doubles format
+})
+// Returns: { minPercent, maxPercent, minDamage, maxDamage, guaranteed_ko, notes }
+```
+
+All inputs use **Stat Points (0-32)** directly — no EV conversion at the boundary. The old `spToEv()` / `evsToSp()` conversions are only relevant at the `POST /api/damage` API boundary, where classic EV inputs (0-252) are converted to SP internally.
 
 ---
 
 ## buildPokemon Boundary
 
-`damage.js:buildPokemon(speciesRow, evs, nature, level, item, ability)` is the sole bridge from SP to EV:
-
-```javascript
-function buildPokemon(speciesRow, evs, nature, level, item, ability) {
-  return new calc.Pokemon(gen, speciesRow.name, {
-    level, nature, item, ability,
-    evs: { hp: evs[0], atk: evs[1], def: evs[2], spa: evs[3], spd: evs[4], spe: evs[5] },
-    ivs: { hp: 31, atk: 31, def: 31, spa: 31, spd: 31, spe: 31 },
-  });
-}
+`damage.js:buildPokemon(row, side)` returns a plain object (not @smogon/calc Pokemon) suitable for CalcDamage:<｜end▁of▁thinking｜>
+  return {
+    name: row.name, nature: side.nature || 'Hardy', sp,
+    item: side.item || '', ability: row.ability || '',
+    baseStats: { hp: row.hp, atk: row.atk, def: row.def, spa: row.spa, spd: row.spd, spe: row.spe },
+    types: [row.type1, row.type2].filter(Boolean),
+  };
 ```
 
-- `evs` parameter is always classic EVs (0-252), converted from SP via `spToEv()` before this call
+- `sp` field takes Stat Points (0-32) directly — no EV conversion needed at this boundary
 - `gen = calc.Generations.get(9)` (Gen 9)
 - `level = 50` (constant)
 - IVs are always 31 (Champions has no IV mechanic)
@@ -38,9 +48,9 @@ The order in which weather, terrain, and field conditions are applied to a damag
 1. **Base power** determined by move's static properties (from `moves` table)
 2. **Weather Ball type/power resolution** (special case — see below)
 3. **Solar Beam charge skip and BP penalty** (0.5x in rain/sand/snow)
-4. **Item multiplier** applied by `@smogon/calc` natively (Choice Band/Specs, Life Orb, Assault Vest)
-5. **Weather type boost** (Rain boosts Water 1.5x, Sun boosts Fire 1.5x) applied by `@smogon/calc`
-6. **Field weather** set in `@smogon/calc` `Field({weather: 'Rain'})` etc.
+4. **Item multiplier** applied by `nerd_of_now_calc.js` natively (Choice Band/Specs, Life Orb, Assault Vest)
+5. **Weather type boost** (Rain boosts Water 1.5x, Sun boosts Fire 1.5x) applied by `nerd_of_now_calc.js`
+6. **Field weather** set in `nerd_of_now_calc.js` `Field({weather: 'Rain'})` etc.
 7. **Recoil** computed after damage, capped at target's remaining HP
 
 **Verified at:** `spread_scorer.js:14-16` (item natively handled), `team_analyzer.js:143-153` (Weather Ball resolution).
@@ -69,7 +79,7 @@ The `WEATHER_BALL_TYPES` mapping exists identically in three places (intentional
 
 ## Recoil Convention
 
-Recoil is computed post-damage, not as part of the `@smogon/calc` call. The formula:
+Recoil is computed post-damage, not as part of the `nerd_of_now_calc.js` call. The formula:
 
 ```
 recoil_pct = min(damage_dealt × recoil_ratio, max_recoil_pct)
@@ -139,21 +149,21 @@ TYPE_VALUES = {
 The project maintains a ported Nerd of Now calculator (`nerd_of_now_calc.js`) as a reference implementation. The standard for "verified against Nerd of Now" means:
 
 - The ported calculator produces the same damage ranges as the upstream JavaScript calculator
-- Any discrepancy between `@smogon/calc` and the Nerd of Now calculator is investigated
+- Any discrepancy between `nerd_of_now_calc.js` and the Nerd of Now calculator is investigated
 - The Nerd of Now calculator uses Champions-specific stat formulas (`CALC_HP_CHAMP`, `CALC_STAT_CHAMP`)
 
-This is a reference/validation tool, not a production path.
+
 
 ---
 
 ## Item Threading
 
-Items are threaded into `@smogon/calc` via the `item` parameter of `damage.buildPokemon()`. `@smogon/calc` natively models:
+Items are threaded into `nerd_of_now_calc.js` via the `item` parameter of `damage.buildPokemon()`. `nerd_of_now_calc.js` natively models:
 - Choice Scarf/Band/Specs (damage + speed multipliers)
 - Life Orb (damage + recoil)
 - Assault Vest (SpD ×1.5)
 
-Items NOT modeled natively by `@smogon/calc` (handled by the scorer's own logic):
+Items NOT modeled natively by `nerd_of_now_calc.js` (handled by the scorer's own logic):
 - Leftovers (HP recovery — modeled as breakpoint bonus in `item_optimizer.js`)
 - Rocky Helmet (attacker recoil — not modeled in scoring)
 - Focus Sash (survival guarantee — handled via sash penalty in `spread_scorer.js`)
@@ -183,4 +193,4 @@ Abilities are resolved via `item_optimizer.js:resolveRealAbility()`:
 3. Two-pass: provisional pick → weather context → final pick
 4. Choice Scarf excluded when real conditional-speed ability is active
 
-The ability is passed to `@smogon/calc` via `damage.buildPokemon(…, ability)`.
+The ability is passed to `CalcDamage()` via the `attacker.ability` / `defender.ability` fields.

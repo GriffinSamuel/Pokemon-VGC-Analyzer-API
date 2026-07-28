@@ -1,11 +1,10 @@
 const fs = require('fs');
 const path = require('path');
-const calc = require('@smogon/calc');
 const pool = require('../db/pool');
-const damage = require('../routes/damage');
 const { ALL_TYPES, effectivenessAgainst, weaknessesOf, resistancesOf } = require('./typeChart');
 const { generateSynergyReasons } = require('./synergy_reasons');
-const { spToEv, calcStat, natureMultiplierFor } = require('./stat_formula');
+const { calcStat, natureMultiplierFor } = require('./stat_formula');
+const { CalcDamage, getMoveData } = require('./nerd_of_now_calc');
 const { getMostCommonSpread, getCommonSpreads, getCommonItems, getCommonSpeedTiers, getSpeciesRow, getTopDamageAffectingItem, DAMAGE_AFFECTING_ITEMS } = require('./ev_observations');
 const { getRealAbilityFrequency } = require('./item_optimizer');
 // getTopAttackerSpreads: the same top-3-real-spreads-worst-case methodology
@@ -681,26 +680,18 @@ function topMovesFor(nameLower, n = 3) {
   return (rec.pokemon[nameLower]?.moves || []).slice(0, n);
 }
 
-function spToEvObject(sp) {
-  return {
-    hp: spToEv(sp?.hp || 0), atk: spToEv(sp?.atk || 0), def: spToEv(sp?.def || 0),
-    spa: spToEv(sp?.spa || 0), spd: spToEv(sp?.spd || 0), spe: spToEv(sp?.spe || 0),
-  };
-}
-
-// Same Pokemon-construction pattern as damage.js's buildPokemon, with one addition
-// (`boosts`) damage.js doesn't need for its own callers — written locally instead
-// of editing damage.js (out of scope; see CLAUDE.md constraints), reusing its
-// exported `gen`/`LEVEL` constants so the underlying calc is identical.
+// Build a plain Pokemon object from DB row and SP/nature/item, suitable for CalcDamage
 function buildBoostedPokemon(pokemonRow, side, boosts) {
-  return new calc.Pokemon(damage.gen, pokemonRow.name, {
-    level: damage.LEVEL, nature: side.nature, item: side.item, ability: side.ability,
-    evs: side.evs, ivs: side.ivs, boosts,
-    overrides: {
-      baseStats: { hp: pokemonRow.hp, atk: pokemonRow.atk, def: pokemonRow.def, spa: pokemonRow.spa, spd: pokemonRow.spd, spe: pokemonRow.spe },
-      types: [pokemonRow.type1, pokemonRow.type2].filter(Boolean),
-    },
-  });
+  // Note: boosts not directly supported by CalcDamage (currently no callers use non-empty boosts)
+  return {
+    name: pokemonRow.name,
+    nature: side.nature || 'Hardy',
+    sp: side.sp || {},
+    item: side.item || '',
+    ability: side.ability || pokemonRow.ability || '',
+    baseStats: { hp: pokemonRow.hp, atk: pokemonRow.atk, def: pokemonRow.def, spa: pokemonRow.spa, spd: pokemonRow.spd, spe: pokemonRow.spe },
+    types: [pokemonRow.type1, pokemonRow.type2].filter(Boolean),
+  };
 }
 
 const REDIRECTION_MOVES = new Set(['follow me', 'rage powder']);
@@ -850,16 +841,25 @@ async function batchFetchTopMoveData(namesLower, movesPerName = 4) {
 }
 
 function damagePercentRange(attackerRow, attackerSide, defenderRow, defenderSide, moveName, activeWeather) {
-  const attacker = buildBoostedPokemon(attackerRow, attackerSide, {});
-  const defender = buildBoostedPokemon(defenderRow, defenderSide, {});
-  const move = new calc.Move(damage.gen, moveName);
-  const fieldOpts = { gameType: 'Doubles' };
-  if (activeWeather) fieldOpts.weather = activeWeather;
-  const field = new calc.Field(fieldOpts);
-  const result = calc.calculate(damage.gen, attacker, defender, move, field);
-  const maxHP = defender.maxHP();
-  const [minD, maxD] = result.range();
-  return { min: round((minD / maxHP) * 100, 1), max: round((maxD / maxHP) * 100, 1) };
+  const moveData = getMoveData(moveName);
+  const result = CalcDamage({
+    attacker: {
+      name: attackerRow.name, nature: attackerSide.nature || 'Hardy', sp: attackerSide.sp || {},
+      item: attackerSide.item || '', ability: attackerSide.ability || attackerRow.ability || '',
+      baseStats: { hp: attackerRow.hp, atk: attackerRow.atk, def: attackerRow.def, spa: attackerRow.spa, spd: attackerRow.spd, spe: attackerRow.spe },
+      types: [attackerRow.type1, attackerRow.type2].filter(Boolean),
+    },
+    defender: {
+      name: defenderRow.name, nature: defenderSide.nature || 'Hardy', sp: defenderSide.sp || {},
+      item: defenderSide.item || '', ability: defenderSide.ability || defenderRow.ability || '',
+      baseStats: { hp: defenderRow.hp, atk: defenderRow.def, def: defenderRow.def, spa: defenderRow.spa, spd: defenderRow.spd, spe: defenderRow.spe },
+      types: [defenderRow.type1, defenderRow.type2].filter(Boolean),
+    },
+    move: moveData,
+    isDouble: true,
+    weather: activeWeather || null,
+  });
+  return { min: round(result.minPercent, 1), max: round(result.maxPercent, 1) };
 }
 
 function findRedirectionMitigation(team, threatenedPokemon) {
@@ -912,12 +912,12 @@ async function analyzeMatchups(team, legalPokemonSet, weatherAnalysis) {
     // --- LIST 1: can this team guarantee-OHKO the candidate? ---
     const candidateSpreadInfo = await getMostCommonSpread(nameLower);
     if (candidateSpreadInfo) {
-      const targetSide = { nature: candidateSpreadInfo.nature || 'Hardy', evs: spToEvObject(candidateSpreadInfo.sp), ivs: { hp: 31 } };
+      const targetSide = { nature: candidateSpreadInfo.nature || 'Hardy', sp: candidateSpreadInfo.sp, ivs: { hp: 31 } };
       for (const member of team) {
         for (const mv of (member.moves || []).slice(0, 4)) {
           if (!mv.power || !mv.type) continue;
           if (effectivenessAgainst(mv.type, candidateTypes) === 0) continue;
-          const attackerSide = { nature: member.nature, item: member.item, ability: member.ability, evs: spToEvObject(member.sp), ivs: { hp: 31 } };
+          const attackerSide = { nature: member.nature, item: member.item, ability: member.ability, sp: member.sp, ivs: { hp: 31 } };
           let dmg;
           try {
             dmg = damagePercentRange(member.pokemonRow, attackerSide, candidateRow, targetSide, mv.move, activeWeather);
@@ -946,7 +946,7 @@ async function analyzeMatchups(team, legalPokemonSet, weatherAnalysis) {
               const spreadKey = `${hp}/${def}`;
               if (seenSpreadKeys.has(spreadKey)) continue;
               seenSpreadKeys.add(spreadKey);
-              const obsSide = { nature: obs.nature || 'Hardy', evs: spToEvObject(obs.sp), ivs: { hp: 31 } };
+              const obsSide = { nature: obs.nature || 'Hardy', sp: obs.sp, ivs: { hp: 31 } };
               try {
                 const obsDmg = damagePercentRange(member.pokemonRow, attackerSide, candidateRow, obsSide, mv.move, activeWeather);
                 totalSpreads++;
@@ -1002,13 +1002,13 @@ async function analyzeMatchups(team, legalPokemonSet, weatherAnalysis) {
       const moveRow = movesByLower[moveEntry.move.toLowerCase()];
       if (!moveRow || moveRow.category === 'Status' || !moveRow.power) continue;
       for (const member of team) {
-        const defenderSide = { nature: member.nature, item: member.item, evs: spToEvObject(member.sp), ivs: { hp: 31 } };
+        const defenderSide = { nature: member.nature, item: member.item, sp: member.sp, ivs: { hp: 31 } };
         const maxes = [];
         const mins = [];
         // FIX 4: save the top spread's attackerSide for weather comparison after the loop
-        const topAttackerSide = attackerSpreads[0] ? { nature: attackerSpreads[0].nature || 'Hardy', ability: attackerAbility, item: attackerItem?.item, evs: spToEvObject(attackerSpreads[0].sp), ivs: { hp: 31 } } : null;
+        const topAttackerSide = attackerSpreads[0] ? { nature: attackerSpreads[0].nature || 'Hardy', ability: attackerAbility, item: attackerItem?.item, sp: attackerSpreads[0].sp, ivs: { hp: 31 } } : null;
         for (const spread of attackerSpreads) {
-          const attackerSide = { nature: spread.nature || 'Hardy', ability: attackerAbility, item: attackerItem?.item, evs: spToEvObject(spread.sp), ivs: { hp: 31 } };
+          const attackerSide = { nature: spread.nature || 'Hardy', ability: attackerAbility, item: attackerItem?.item, sp: spread.sp, ivs: { hp: 31 } };
           let dmg;
           try {
             dmg = damagePercentRange(candidateRow, attackerSide, member.pokemonRow, defenderSide, moveEntry.move, activeWeather);

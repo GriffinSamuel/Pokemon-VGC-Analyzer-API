@@ -1,13 +1,12 @@
 const fs = require('fs');
 const path = require('path');
-const calc = require('@smogon/calc');
 const pool = require('../db/pool');
-const damage = require('../routes/damage');
-const { calcStat, natureMultiplierFor, spToEv, SP_CAP_PER_STAT, SP_BUDGET_TOTAL } = require('./stat_formula');
+const { calcStat, natureMultiplierFor, SP_CAP_PER_STAT, SP_BUDGET_TOTAL } = require('./stat_formula');
 const { getCommonSpreads, getCommonSpeedTiers, getSpeciesRow, getTopDamageAffectingItem } = require('./ev_observations');
 const { getSpeedModifiers, trickroomRelevant } = require('./speed_context');
 const { itemBreakpointBonus, OFFENSIVE_ROLES } = require('./item_optimizer');
 const { classifyRole } = require('./role_classifier');
+const { CalcDamage, getMoveData } = require('./nerd_of_now_calc');
 const { effectivenessAgainst } = require('./typeChart');
 
 // Items @smogon/calc already models natively (Choice Scarf's 1.5x Speed, Choice
@@ -346,13 +345,6 @@ function topMovesFor(nameLower, n = 3) {
   return (rec.pokemon[nameLower]?.moves || []).slice(0, n);
 }
 
-function spObjectToEv(sp) {
-  return {
-    hp: spToEv(sp?.hp || 0), atk: spToEv(sp?.atk || 0), def: spToEv(sp?.def || 0),
-    spa: spToEv(sp?.spa || 0), spd: spToEv(sp?.spd || 0), spe: spToEv(sp?.spe || 0),
-  };
-}
-
 function computeFinalStats(pokemonRow, sp, nature) {
   const stats = {};
   for (const key of ['hp', 'atk', 'def', 'spa', 'spd', 'spe']) {
@@ -372,14 +364,26 @@ function computeFinalStats(pokemonRow, sp, nature) {
 const damageCalcCache = new Map();
 
 function runCalc(attackerRow, attackerSide, defenderRow, defenderSide, moveName, fieldOpts) {
-  const attackerPokemon = damage.buildPokemon(attackerRow, attackerSide);
-  const defenderPokemon = damage.buildPokemon(defenderRow, defenderSide);
-  const calcMove = new calc.Move(damage.gen, moveName);
-  const calcField = new calc.Field(Object.assign({}, { gameType: 'Doubles' }, fieldOpts || {}));
-  const result = calc.calculate(damage.gen, attackerPokemon, defenderPokemon, calcMove, calcField);
-  const maxHP = defenderPokemon.maxHP();
-  const [minDamage, maxDamage] = result.range();
-  return { minPercent: (minDamage / maxHP) * 100, maxPercent: (maxDamage / maxHP) * 100 };
+  const moveData = getMoveData(moveName);
+  const result = CalcDamage({
+    attacker: {
+      name: attackerRow.name, nature: attackerSide.nature || 'Hardy', sp: attackerSide.sp || {},
+      item: attackerSide.item || '', ability: attackerRow.ability || '',
+      baseStats: { hp: attackerRow.hp, atk: attackerRow.atk, def: attackerRow.def, spa: attackerRow.spa, spd: attackerRow.spd, spe: attackerRow.spe },
+      types: [attackerRow.type1, attackerRow.type2].filter(Boolean),
+    },
+    defender: {
+      name: defenderRow.name, nature: defenderSide.nature || 'Hardy', sp: defenderSide.sp || {},
+      item: defenderSide.item || '', ability: defenderRow.ability || '',
+      baseStats: { hp: defenderRow.hp, atk: defenderRow.def, def: defenderRow.def, spa: defenderRow.spa, spd: defenderRow.spd, spe: defenderRow.spe },
+      types: [defenderRow.type1, defenderRow.type2].filter(Boolean),
+    },
+    move: moveData,
+    isDouble: true,
+    weather: fieldOpts?.weather || null,
+    terrain: fieldOpts?.terrain || null,
+  });
+  return { minPercent: result.minPercent, maxPercent: result.maxPercent };
 }
 
 // --- Worst-case damage across the attacker's top-3 observed spreads -------------
@@ -410,8 +414,8 @@ async function weightedDefensiveDamage({ attackerRow, move, attackerSpreads, att
 
     let calcResult = damageCalcCache.get(cacheKey);
     if (!calcResult) {
-      const attackerSide = { nature: spreadNature, item: attackerItem || undefined, evs: spObjectToEv(spread.sp), ivs: { hp: 31 } };
-      const defenderSide = { nature: defenderNature, item: defenderItem || undefined, evs: spObjectToEv(defenderSp), ivs: { hp: 31 } };
+      const attackerSide = { nature: spreadNature, item: attackerItem || undefined, sp: spread.sp };
+      const defenderSide = { nature: defenderNature, item: defenderItem || undefined, sp: defenderSp };
       try {
         calcResult = runCalc(attackerRow, attackerSide, defenderRow, defenderSide, move, fieldOpts);
       } catch (err) {
@@ -456,8 +460,8 @@ async function weightedOffensiveDamage({ attackerRow, attackerSp, attackerNature
 
     let calcResult = damageCalcCache.get(cacheKey);
     if (!calcResult) {
-      const attackerSide = { nature: attackerNature, item: attackerItem || undefined, evs: spObjectToEv(attackerSp), ivs: { hp: 31 } };
-      const targetSide = { nature: targetNature, evs: spObjectToEv(spread.sp), ivs: { hp: 31 } };
+      const attackerSide = { nature: attackerNature, item: attackerItem || undefined, sp: attackerSp };
+      const targetSide = { nature: targetNature, sp: spread.sp };
       try {
         calcResult = runCalc(attackerRow, attackerSide, targetRow, targetSide, move, fieldOpts);
       } catch (err) {

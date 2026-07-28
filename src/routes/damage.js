@@ -1,47 +1,48 @@
 const express = require('express');
 const router = express.Router();
 const pool = require('../db/pool');
-const calc = require('@smogon/calc');
 const { buildCacheKey, getCachedDamage, setCachedDamage } = require('../scrapers/serebii');
 const { normalizePokemonName } = require('../utils/normalize');
-const { spToEv } = require('../utils/stat_formula');
 const { getMostCommonSpread } = require('../utils/ev_observations');
+const { CalcDamage, buildStatsFromSP } = require('../utils/nerd_of_now_calc');
 const logger = require('../utils/logger');
 
-const gen = calc.Generations.get(9);
-const LEVEL = 50;
-
-// ev_observations is keyed by normalized_name (Mega-aware) — mirrors team.js's own
-// id derivation so a plain display name ("Swampert" + Swampertite) resolves the
-// same way it would if it had come through the Showdown parser.
-function toNormalizedLower(name, item) {
-  const id = (name || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
-  return (normalizePokemonName(id, item) || name || '').toLowerCase();
+// Helper: convert classic EVs (0-252) to Stat Points (0-32)
+function evsToSp(evs) {
+  const sp = { hp: 0, atk: 0, def: 0, spa: 0, spd: 0, spe: 0 };
+  for (const [key, value] of Object.entries(evs || {})) {
+    if (value > 0 && sp[key] !== undefined) sp[key] = Math.min(Math.round((value + 4) / 8), 32);
+  }
+  return sp;
 }
 
-function spToEvObject(sp) {
+// Build final stats for display
+function buildDisplayStats(row, sp, nature) {
+  return buildStatsFromSP(
+    { hp: row.hp, atk: row.atk, def: row.def, spa: row.spa, spd: row.spd, spe: row.spe },
+    sp,
+    nature || 'Hardy'
+  );
+}
+
+// Build a plain Pokemon object from DB row and side (with evs or sp), suitable for CalcDamage
+function buildPokemon(row, side = {}) {
+  const sp = side.sp || evsToSp(side.evs || {});
   return {
-    hp: spToEv(sp?.hp || 0), atk: spToEv(sp?.atk || 0), def: spToEv(sp?.def || 0),
-    spa: spToEv(sp?.spa || 0), spd: spToEv(sp?.spd || 0), spe: spToEv(sp?.spe || 0),
+    name: row.name,
+    nature: side.nature || 'Hardy',
+    sp,
+    item: side.item || '',
+    ability: row.ability || '',
+    baseStats: { hp: row.hp, atk: row.atk, def: row.def, spa: row.spa, spd: row.spd, spe: row.spe },
+    types: [row.type1, row.type2].filter(Boolean),
   };
 }
 
-function buildPokemon(row, side = {}) {
-  return new calc.Pokemon(gen, row.name, {
-    level: LEVEL,
-    nature: side.nature,
-    item: side.item,
-    ability: side.ability,
-    evs: side.evs,
-    ivs: side.ivs,
-    overrides: {
-      baseStats: {
-        hp: row.hp, atk: row.atk, def: row.def,
-        spa: row.spa, spd: row.spd, spe: row.spe,
-      },
-      types: [row.type1, row.type2].filter(Boolean),
-    },
-  });
+
+function toNormalizedLower(name, item) {
+  const id = (name || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+  return (normalizePokemonName(id, item) || name || "").toLowerCase();
 }
 
 const EV_STAT_KEYS = ['hp', 'atk', 'def', 'spa', 'spd', 'spe'];
@@ -69,36 +70,37 @@ function validateEvs(evs, label) {
   return null;
 }
 
-// gameType: 'Doubles' makes @smogon/calc apply the 0.75x spread-move reduction
-// internally for moves that hit all adjacent targets (e.g. Earthquake) -
-// weather/terrain are only set if the caller provided them. Shared by POST / and
-// POST /realistic so the actual damage-calc call site exists exactly once.
-function runCalculation(attackerRow, defenderRow, attackerSide, defenderSide, move, field) {
+// Shared by POST / and POST /realistic — routes damage calcs through CalcDamage.
+function runCalculation(attackerRow, defenderRow, attackerSide, defenderSide, moveName, moveRow, field) {
   const attackerPokemon = buildPokemon(attackerRow, attackerSide);
   const defenderPokemon = buildPokemon(defenderRow, defenderSide);
-  const calcMove = new calc.Move(gen, move);
 
-  const fieldOptions = { gameType: 'Doubles' };
-  if (field?.weather) fieldOptions.weather = field.weather;
-  if (field?.terrain) fieldOptions.terrain = field.terrain;
-  const calcField = new calc.Field(fieldOptions);
-
-  const result = calc.calculate(gen, attackerPokemon, defenderPokemon, calcMove, calcField);
-  const ko = result.kochance();
-  const guaranteed_ko = (ko.chance === 1 && ko.n <= 3) ? `${ko.n}HKO` : 'none';
-  const [minDamage, maxDamage] = result.range();
-  const maxHP = defenderPokemon.maxHP();
+  const result = CalcDamage({
+    attacker: attackerPokemon,
+    defender: defenderPokemon,
+    move: {
+      name: moveName,
+      type: moveRow?.type || 'Normal',
+      category: moveRow?.category || 'Physical',
+      bp: moveRow?.power || 0,
+      isSpread: moveRow?.is_spread || false,
+      makesContact: false,
+    },
+    isDouble: true,
+    weather: field?.weather || null,
+    terrain: field?.terrain || null,
+  });
 
   return {
-    move,
-    guaranteed_ko,
+    move: moveName,
+    guaranteed_ko: result.guaranteed_ko || 'none',
     damage_range: {
-      min_percent: Math.round((minDamage / maxHP) * 1000) / 10,
-      max_percent: Math.round((maxDamage / maxHP) * 1000) / 10,
+      min_percent: Math.round(result.minPercent * 10) / 10,
+      max_percent: Math.round(result.maxPercent * 10) / 10,
     },
-    attacker_final_stats: attackerPokemon.stats,
-    defender_final_stats: defenderPokemon.stats,
-    notes: result.fullDesc(),
+    attacker_final_stats: result._attackerStats,
+    defender_final_stats: result._defenderStats,
+    notes: result.notes || '',
   };
 }
 
@@ -120,7 +122,7 @@ router.post('/', async (req, res, next) => {
     if (defender.use_observed_sp === true) {
       const observed = await getMostCommonSpread(toNormalizedLower(defender.name, defender.item));
       if (observed) {
-        resolvedDefender = { ...defender, evs: spToEvObject(observed.sp), nature: defender.nature || observed.nature };
+        resolvedDefender = { ...defender, sp: observed.sp, nature: defender.nature || observed.nature };
         defenderSpSource = 'observed';
       }
     }
@@ -142,7 +144,7 @@ router.post('/', async (req, res, next) => {
     if (!moveRows.rows.length) return res.status(404).json({ error: 'Move not found' });
 
     const responseBody = {
-      ...runCalculation(attackerRows.rows[0], defenderRows.rows[0], attacker, resolvedDefender, move, field),
+      ...runCalculation(attackerRows.rows[0], defenderRows.rows[0], attacker, resolvedDefender, move, moveRows.rows[0], field),
       ...(defender.use_observed_sp === true ? { defender_sp_source: defenderSpSource } : {}),
     };
 
@@ -170,10 +172,10 @@ router.post('/realistic', async (req, res, next) => {
     ]);
 
     const resolvedAttacker = attackerObserved
-      ? { ...attacker, evs: spToEvObject(attackerObserved.sp), nature: attacker.nature || attackerObserved.nature }
+      ? { ...attacker, sp: attackerObserved.sp, nature: attacker.nature || attackerObserved.nature }
       : attacker;
     const resolvedDefender = defenderObserved
-      ? { ...defender, evs: spToEvObject(defenderObserved.sp), nature: defender.nature || defenderObserved.nature }
+      ? { ...defender, sp: defenderObserved.sp, nature: defender.nature || defenderObserved.nature }
       : defender;
 
     const cacheKey = buildCacheKey({ attacker: resolvedAttacker, defender: resolvedDefender, move, field, _endpoint: 'realistic' });
@@ -191,7 +193,7 @@ router.post('/realistic', async (req, res, next) => {
     if (!moveRows.rows.length) return res.status(404).json({ error: 'Move not found' });
 
     const responseBody = {
-      ...runCalculation(attackerRows.rows[0], defenderRows.rows[0], resolvedAttacker, resolvedDefender, move, field),
+      ...runCalculation(attackerRows.rows[0], defenderRows.rows[0], resolvedAttacker, resolvedDefender, move, moveRows.rows[0], field),
       attacker_sp_source: attackerObserved ? 'observed' : 'user_supplied',
       defender_sp_source: defenderObserved ? 'observed' : 'user_supplied',
       attacker_sp_observations: attackerObserved ? attackerObserved.total_observations : 0,
@@ -209,6 +211,5 @@ router.post('/realistic', async (req, res, next) => {
 });
 
 module.exports = router;
-module.exports.gen = gen;
-module.exports.LEVEL = LEVEL;
 module.exports.buildPokemon = buildPokemon;
+module.exports.evsToSp = evsToSp;

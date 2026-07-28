@@ -986,6 +986,25 @@ function detectTeamWeather(team) {
   return null;
 }
 
+/**
+ * Resolve a move name to a move object suitable for CalcDamage.
+ * Uses @pkmn/dex to look up type/category/BP/spread/contact.
+ */
+function getMoveData(moveName) {
+  const dexMove = Dex.moves.get(moveName);
+  if (!dexMove || !dexMove.exists) {
+    return { name: moveName, type: 'Normal', category: 'Physical', bp: 0, isSpread: false, makesContact: false };
+  }
+  return {
+    name: dexMove.name,
+    type: dexMove.type || 'Normal',
+    category: dexMove.category || 'Physical',
+    bp: dexMove.basePower || 0,
+    isSpread: dexMove.spread || false,
+    makesContact: !!dexMove.contact,
+  };
+}
+
 module.exports = {
   CalcDamage,
   detectTeamWeather,
@@ -1000,4 +1019,5 @@ module.exports = {
   applyWeatherMod,
   applyFinalMods,
   applyRandomFactor,
+  getMoveData,
 };

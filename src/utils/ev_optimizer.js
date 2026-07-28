@@ -1,14 +1,13 @@
 const fs = require('fs');
 const path = require('path');
 const { Worker } = require('worker_threads');
-const calc = require('@smogon/calc');
 const pool = require('../db/pool');
-const damage = require('../routes/damage');
-const { calcStat, natureMultiplierFor, snapToBreakpoint, findMinSpForStat, spToEv, SP_STEPS, SP_CAP_PER_STAT, SP_BUDGET_TOTAL } = require('./stat_formula');
+const { calcStat, natureMultiplierFor, snapToBreakpoint, findMinSpForStat, SP_STEPS, SP_CAP_PER_STAT, SP_BUDGET_TOTAL } = require('./stat_formula');
 const { getThreatMatrix } = require('./threat_matrix');
 const { getCommonSpeedTiers, getMostCommonSpread, getObservationCount, getNatureDistribution } = require('./ev_observations');
 const { classifyRole } = require('./role_classifier');
 const { findOptimalSpread } = require('./spread_optimizer');
+const { CalcDamage, getMoveData } = require('./nerd_of_now_calc');
 const { SCORER_VERSION } = require('./spread_scorer');
 const {
   getMetaContext, getSpeedModifiers, trickroomRelevant,
@@ -89,18 +88,23 @@ function round(value, decimals) {
   return Math.round(value * factor) / factor;
 }
 
-function guaranteedTier(result) {
-  const ko = result.kochance();
-  return ko.chance === 1 && ko.n <= 3 ? ko.n : null; // null = not guaranteed within 3 hits
+function guaranteedTierByPercent(minPercent) {
+  if (minPercent >= 100) return 1;  // guaranteed OHKO
+  if (minPercent >= 50) return 2;   // guaranteed 2HKO
+  if (minPercent >= 33.34) return 3; // guaranteed 3HKO
+  return null;                       // not guaranteed within 3 hits
 }
 
-// spToEv() is the ONLY place classic-EV numbers exist — @smogon/calc has no native
-// Stat Point support, so every SP object needs conversion right before it's handed
-// to damage.buildPokemon(). Nowhere else in this module deals in EV terms.
-function spObjectToEv(sp) {
+// Convert SP to CalcDamage-friendly attacker/defender objects
+function buildCalcPokemon(row, side) {
   return {
-    hp: spToEv(sp?.hp || 0), atk: spToEv(sp?.atk || 0), def: spToEv(sp?.def || 0),
-    spa: spToEv(sp?.spa || 0), spd: spToEv(sp?.spd || 0), spe: spToEv(sp?.spe || 0),
+    name: row.name,
+    nature: side.nature || 'Hardy',
+    sp: side.sp || {},
+    item: side.item || '',
+    ability: row.ability || '',
+    baseStats: { hp: row.hp, atk: row.atk, def: row.def, spa: row.spa, spd: row.spd, spe: row.spe },
+    types: [row.type1, row.type2].filter(Boolean),
   };
 }
 
@@ -139,18 +143,17 @@ function describeNatureDistribution(threat) {
 
 // Binary search over SP_STEPS (0-32) for the lowest SP in `statKey` that flips the
 // baseline (0 SP) guaranteed-KO tier to a strictly safer one.
-function findSurvivalThreshold({ attackerRow, attackerSide, defenderRow, defenderSideSp, statKey, calcMove, calcField }) {
+function findSurvivalThreshold({ attackerRow, attackerSide, defenderRow, defenderSideSp, statKey, moveData, hasSun, hasRain }) {
   function tierAtSp(sp) {
     const spObj = { hp: 0, atk: 0, def: 0, spa: 0, spd: 0, spe: 0, ...(defenderSideSp.sp || {}) };
     spObj[statKey] = sp;
-    const defenderPokemon = damage.buildPokemon(defenderRow, {
-      nature: defenderSideSp.nature, item: defenderSideSp.item, ivs: defenderSideSp.ivs, evs: spObjectToEv(spObj),
+    const defender = buildCalcPokemon(defenderRow, { nature: defenderSideSp.nature, item: defenderSideSp.item, sp: spObj });
+    const attacker = buildCalcPokemon(attackerRow, { nature: attackerSide.nature, item: attackerSide.item, sp: attackerSide.sp });
+    const result = CalcDamage({
+      attacker, defender, move: moveData, isDouble: true,
+      weather: hasSun ? 'Sun' : hasRain ? 'Rain' : null,
     });
-    const attackerPokemon = damage.buildPokemon(attackerRow, {
-      nature: attackerSide.nature, item: attackerSide.item, evs: spObjectToEv(attackerSide.sp),
-    });
-    const result = calc.calculate(damage.gen, attackerPokemon, defenderPokemon, calcMove, calcField);
-    return guaranteedTier(result);
+    return guaranteedTierByPercent(result.minPercent);
   }
 
   const baselineTier = tierAtSp(0);
@@ -197,11 +200,11 @@ async function findDefensiveThresholds(defenderRow, threatMatrix, overrides) {
   const movesByLower = Object.fromEntries(moveRows.map((m) => [m.name.toLowerCase(), m]));
   const attackersByLower = Object.fromEntries(attackerRows.map((r) => [r.name.toLowerCase(), r]));
 
-  const calcField = new calc.Field(Object.assign({}, { gameType: 'Doubles' }, overrides && overrides.fieldOpts ? overrides.fieldOpts : {}));
+  const hasSun = overrides?.fieldOpts?.weather === 'Sun';
+  const hasRain = overrides?.fieldOpts?.weather === 'Rain';
   const defenderSideSp = {
     nature: overrides.nature,
     item: overrides.item,
-    ivs: { hp: 31 }, // Champions always uses 31 IV equivalent
   };
 
   const thresholds = [];
@@ -216,27 +219,29 @@ async function findDefensiveThresholds(defenderRow, threatMatrix, overrides) {
     if (!attackerSide) continue;
 
     const statKey = moveRow.category === 'Physical' ? 'def' : 'spd';
-    const calcMove = new calc.Move(damage.gen, threat.move);
+    const moveData = getMoveData(threat.move);
 
     // Marginal value check — compute whether defender already survives
     // this attack at 0 SP. If it does, the threshold provides zero marginal value.
     let survivalWithoutInvestment = false;
     try {
       const zeroSpObj = { hp: 0, atk: 0, def: 0, spa: 0, spd: 0, spe: 0 };
-      const zeroDefender = damage.buildPokemon(defenderRow, {
-        nature: defenderSideSp.nature, item: defenderSideSp.item, ivs: defenderSideSp.ivs,
-        evs: spObjectToEv(zeroSpObj),
+      const zeroDefender = buildCalcPokemon(defenderRow, {
+        nature: defenderSideSp.nature, item: defenderSideSp.item, sp: zeroSpObj,
       });
-      const zeroAttacker = damage.buildPokemon(attackerRow, { nature: attackerSide.nature, evs: attackerSide.evs, ivs: attackerSide.ivs });
-      const zeroResult = calc.calculate(damage.gen, zeroAttacker, zeroDefender, calcMove, calcField);
-      survivalWithoutInvestment = (guaranteedTier(zeroResult) === null);
+      const zeroAttacker = buildCalcPokemon(attackerRow, { nature: attackerSide.nature, sp: attackerSide.sp });
+      const zeroResult = CalcDamage({
+        attacker: zeroAttacker, defender: zeroDefender, move: moveData, isDouble: true,
+        weather: hasSun ? 'Sun' : hasRain ? 'Rain' : null,
+      });
+      survivalWithoutInvestment = (guaranteedTierByPercent(zeroResult.minPercent) === null);
     } catch (_err) { /* if calc fails, assume not survivable (conservative) */ }
 
     let found;
     try {
-      found = findSurvivalThreshold({ attackerRow, attackerSide, defenderRow, defenderSideSp, statKey, calcMove, calcField });
+      found = findSurvivalThreshold({ attackerRow, attackerSide, defenderRow, defenderSideSp, statKey, moveData, hasSun, hasRain });
     } catch (err) {
-      continue; // @smogon/calc can't build this attacker/move combo — skip rather than fail the whole request
+      continue;
     }
     if (!found) continue;
 
@@ -508,7 +513,8 @@ async function findOffensiveThresholds(defenderRow, ownTopMoves, ownMovesByLower
   const { rows: targetRows } = await pool.query('SELECT * FROM pokemon WHERE LOWER(name) = ANY($1)', [targetNames]);
   const targetsByLower = Object.fromEntries(targetRows.map((r) => [r.name.toLowerCase(), r]));
 
-  const calcField = new calc.Field(Object.assign({}, { gameType: 'Doubles' }, overrides && overrides.fieldOpts ? overrides.fieldOpts : {}));
+  const hasSun = overrides?.fieldOpts?.weather === 'Sun';
+  const hasRain = overrides?.fieldOpts?.weather === 'Rain';
   const attackerNature = overrides.nature || null;
   const thresholds = [];
 
@@ -521,20 +527,22 @@ async function findOffensiveThresholds(defenderRow, ownTopMoves, ownMovesByLower
     const hasObservations = observed !== null;
     const targetSp = observed ? observed.sp : { hp: 0, atk: 0, def: 0, spa: 0, spd: 0, spe: 0 };
     const targetNature = observed ? observed.nature : null;
-    const targetEvs = spObjectToEv(targetSp);
 
     let best = null;
     for (const move of damagingMoves) {
       const statKey = move.row.category === 'Physical' ? 'atk' : 'spa';
-      const calcMove = new calc.Move(damage.gen, move.move);
+      const moveData = getMoveData(move.move);
 
       function tierAtSp(sp) {
         const attackerSpObj = { hp: 0, atk: 0, def: 0, spa: 0, spd: 0, spe: 0 };
         attackerSpObj[statKey] = sp;
-        const attackerPokemon = damage.buildPokemon(defenderRow, { nature: attackerNature, item: overrides.item, evs: spObjectToEv(attackerSpObj) });
-        const targetPokemon = damage.buildPokemon(targetRow, { nature: targetNature, evs: targetEvs });
-        const result = calc.calculate(damage.gen, attackerPokemon, targetPokemon, calcMove, calcField);
-        return guaranteedTier(result);
+        const attacker = buildCalcPokemon(defenderRow, { nature: attackerNature, item: overrides.item, sp: attackerSpObj });
+        const defender = buildCalcPokemon(targetRow, { nature: targetNature, sp: targetSp });
+        const result = CalcDamage({
+          attacker, defender, move: moveData, isDouble: true,
+          weather: hasSun ? 'Sun' : hasRain ? 'Rain' : null,
+        });
+        return guaranteedTierByPercent(result.minPercent);
       }
 
       let baselineTier;

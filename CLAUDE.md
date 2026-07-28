@@ -64,7 +64,7 @@ src/
     ├── role_classifier.js      — classifyRole(): 4 roles from base stats + moveset + SP
     ├── speed_context.js        — Meta context, Scarf/weather-ability speed modifiers
     ├── ev_optimizer.js         — Priority-scored SP threshold optimization (greedy fallback)
-    ├── spread_scorer.js        — Real @smogon/calc fitness function for SP spreads
+    ├── spread_scorer.js        — Real CalcDamage fitness function for SP spreads
     ├── spread_optimizer.js     — Genetic algorithm: findOptimalSpread()
     ├── synergy_reasons.js      — Mechanical synergy reason generation
     ├── item_optimizer.js       — Item candidate scoring + conflict resolution
@@ -98,12 +98,12 @@ Champions uses **66 Stat Points total, max 32 per stat** (not classic 508-EV sys
 - `OtherStat = floor((base + sp + 20) × alignment)` where alignment = 1.1 (boosted), 1.0 (neutral), 0.9 (hindered)
 - `spToEv(sp)`: `EV = 8 × SP − 4` for SP≥1, 0 for SP=0
 
-**Why it works with @smogon/calc:** Champions is mechanically identical to classic Gen 9, re-expressed in per-stat units. `@smogon/calc` doesn't need changes — just feed it `spToEv()`-converted values.
+**Why CalcDamage works:** Champions is mechanically identical to classic Gen 9, re-expressed in per-stat units. `nerd_of_now_calc.js` ports the Nerd of Now calculator to speak SP (0-32) natively — no EV conversion needed.
 
 **Key rules:**
-- `spToEv(sp)` is called **only** at the boundary before `damage.buildPokemon()` / `@smogon/calc` — nowhere else
+- All damage calcs use `CalcDamage()` from `nerd_of_now_calc.js` — `@smogon/calc` is fully retired
 - Storage, observations, optimization, and all API endpoints speak SP (0-32/stat, 66 total) exclusively
-- `POST /api/damage`'s `evs` field is intentionally classic EVs (0-252), not SP — it's a thin `@smogon/calc` wrapper by design
+- `POST /api/damage`'s `evs` field is intentionally classic EVs (0-252), not SP — converted to SP internally via `evsToSp()`
 - Champions has no IV mechanic (always 31)
 - `validateSpread()` in `spread_optimizer.js` enforces caps after every GA operation; `recommend.js:813` enforces on input; `spread_scorer.js:1094` asserts final total
 - `slow_bulky_support` locks Atk AND SpA to 0; other roles lock the weaker of Atk/SpA
@@ -186,7 +186,7 @@ node -e "const pool = require('./src/db/pool'); pool.query('SELECT COUNT(*) FROM
 ## Critical Invariants (ALWAYS ENFORCE)
 
 1. **SP caps: 32 per stat, 66 total** — enforced by `validateSpread()` after every GA operation, by `recommend.js:812` on input, by `spread_scorer.js:1093` as final assertion
-2. **spToEv() boundary** — called ONLY before `damage.buildPokemon()` / `@smogon/calc`, nowhere else. The entire codebase speaks SP except at this explicit boundary.
+2. **Single calculator** — all damage calcs use `CalcDamage()` from `nerd_of_now_calc.js`. `@smogon/calc` is fully retired. Inputs are SP (0-32), no EV conversion at calc boundary.
 3. **Marginal-value guard** — a defensive threshold only justifies SP investment if the Pokemon would be KO'd without it. If `survival_without_investment === true`, the threshold must not appear in the Why block.
 4. **Focus Sash rule** — Focus Sash holders have OHKO_prevented contribution reduced by 90% (×0.1). 2HKO/3HKO prevention still matters.
 5. **Locked offensive stats** — `slow_bulky_support` locks Atk AND SpA to 0; other roles lock whichever is weaker. Hard-enforced through every GA stage.
@@ -204,7 +204,7 @@ Detailed conventions, intent, and invariants live in `docs/conventions/`. Consul
 |-----|---------|
 | [INDEX.md](docs/conventions/INDEX.md) | Master index with standing note and one-line summaries |
 | `CONVENTIONS_sp_system.md` | SP formulas, caps, enforcement, spToEv boundary, marginal-value guard, Focus Sash, locked stats, minimization |
-| `CONVENTIONS_damage_calc.md` | @smogon/calc usage, weather/ability/item order, Weather Ball, recoil, aggression multiplier, TYPE_VALUES |
+| `CONVENTIONS_damage_calc.md` | CalcDamage usage, weather/ability/item order, Weather Ball, recoil, aggression multiplier, TYPE_VALUES |
 | `CONVENTIONS_format_output.md` | Threshold format, Why block, secondary interactions, build labels, Mega naming, section ordering |
 | `CONVENTIONS_inconsistencies.md` | 11 inconsistencies (1 P0, 4 P1, 6 P2) — species resolution, weather vocab, nature modifiers, role duality |
 
