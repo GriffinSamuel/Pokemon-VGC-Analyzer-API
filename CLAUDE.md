@@ -8,8 +8,8 @@ Python is installed via `.venv` in the project root. Plain `python` is intercept
 - `.venv\Scripts\python.exe` in shell commands
 - `src/utils/ml.js`'s `runPythonScript()` for programmatic calls
 
-## CRITICAL: Architecture Documentation
-**Before editing any file, consult `docs/architecture/INDEX.md` and read the relevant `ARCHITECTURE_*.md` shard for that subsystem's conventions and dependencies. Update the shard in the same session if your edit changes anything it documents.**
+## CRITICAL: Conventions & Structure Docs
+**Before editing any file, consult `docs/conventions/INDEX.md` and read the relevant `CONVENTIONS_*.md` for that subsystem's conventions. For structural relationships (call sites, data flow, module map), use `graphify query "<question>"` or `graphify path "<A>" "<B>"` — graphify owns the architecture layer.**
 
 ---
 
@@ -180,27 +180,6 @@ node -e "const pool = require('./src/db/pool'); pool.query('SELECT COUNT(*) FROM
 node -e "const pool = require('./src/db/pool'); pool.query('SELECT pokemon_name, usage_percent FROM usage_stats ORDER BY usage_count DESC LIMIT 10').then(r => { console.table(r.rows); pool.end(); });"
 node -e "const pool = require('./src/db/pool'); pool.query('SELECT COUNT(*) FROM ev_observations').then(r => { console.log(r.rows); pool.end(); });"
 ```
-
----
-
-## Architecture Documentation
-
-Detailed subsystem documentation lives in `docs/architecture/`. Consult it before editing any file:
-
-| Shard | Summary |
-|-------|---------|
-| [INDEX.md](docs/architecture/INDEX.md) | Master index with one-line summaries of every shard |
-| `ARCHITECTURE_overview.md` | Module map (every file → responsibility → exports → consumers) |
-| `ARCHITECTURE_sp_system.md` | SP formula, spToEv boundary, caps, breakpoints, locked stats |
-| `ARCHITECTURE_optimizer_pipeline.md` | Greedy thresholds, genetic algorithm, fitness function, worker threads |
-| `ARCHITECTURE_team_build.md` | POST /api/team/build end-to-end (7 phases), role classification, item optimizer |
-| `ARCHITECTURE_damage_calc.md` | @smogon/calc usage, buildPokemon boundary, type chart, normalization |
-| `ARCHITECTURE_data_pipeline.md` | Scrapers (4), DB schema, seed, cron schedules, data flow diagram |
-| `ARCHITECTURE_ml_module.md` | Python files, Node↔Python bridge, model outputs, training pipeline |
-| `ARCHITECTURE_api_infrastructure.md` | Express setup, rate limiting, logging, cache, test infrastructure |
-| `ARCHITECTURE_scoring_classification.md` | TYPE_VALUES, aggression, speed-OHKO, KO tiers, Choice item rules |
-| `ARCHITECTURE_inconsistencies.md` | 11 inconsistencies catalogued (1 P0, 4 P1, 6 P2) |
-| `ARCHITECTURE_conventions.md` | Format strings, naming, data shapes, response formats |
 
 ---
 
