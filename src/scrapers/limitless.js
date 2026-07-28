@@ -5,7 +5,7 @@ const pool = require('../db/pool');
 const logger = require('../utils/logger');
 const { normalizeTeam } = require('../utils/normalize');
 const { withRetry } = require('../utils/retry');
-const { recordSuccess, recordFailure } = require('../utils/health');
+const { recordHealth } = require('../utils/health');
 
 const API = 'https://play.limitlesstcg.com/api';
 
@@ -121,10 +121,10 @@ async function scrape() {
       }
     }
 
-    await recordSuccess('limitless-scraper');
+    await recordHealth('limitless-scraper', true);
     logger.info('Scrape complete');
   } catch (err) {
-    await recordFailure('limitless-scraper', err.message);
+    await recordHealth('limitless-scraper', false, err.message);
     logger.error('Scraper failed', { error: err.message });
   }
 }

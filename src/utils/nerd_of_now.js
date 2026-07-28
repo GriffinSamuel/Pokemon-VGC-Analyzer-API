@@ -29,8 +29,7 @@ const SETDEX_URL = 'https://raw.githubusercontent.com/nerd-of-now/NCP-VGC-Damage
 const CACHE_DIR = path.join(__dirname, '..', 'ml', 'data');
 const CACHE_FILE = path.join(CACHE_DIR, 'nerd_of_now_sets.json');
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
-const SP_BUDGET_TOTAL = 66;
-const SP_CAP = 32;
+const { SP_CAP_PER_STAT, SP_BUDGET_TOTAL } = require('./stat_formula');
 
 // EV stat key mapping from Nerd of Now's abbreviated format to internal format.
 // Nerd of Now uses: hp, at, df, sa, sd, sp as the abbreviation convention
@@ -63,7 +62,7 @@ function convertEVsToSP(evs) {
   // Convert each stat
   for (const [evKey, spKey] of Object.entries(EV_KEY_MAP)) {
     const value = evToSp(evs[evKey]);
-    const capped = Math.min(value, SP_CAP);
+    const capped = Math.min(value, SP_CAP_PER_STAT);
     sp[spKey] = capped;
     total += capped;
   }
@@ -75,7 +74,7 @@ function convertEVsToSP(evs) {
     let scaledTotal = 0;
     for (const key of SP_KEYS) {
       const raw = Math.round(sp[key] * scale);
-      scaled[key] = Math.min(raw, SP_CAP);
+      scaled[key] = Math.min(raw, SP_CAP_PER_STAT);
       scaledTotal += scaled[key];
     }
     // Fix rounding surplus: subtract from highest stat(s)
@@ -91,7 +90,7 @@ function convertEVsToSP(evs) {
       const sorted = [...SP_KEYS].sort((a, b) => scaled[b] - scaled[a]);
       for (const key of sorted) {
         if (scaledTotal >= SP_BUDGET_TOTAL) break;
-        if (scaled[key] < SP_CAP) { scaled[key]++; scaledTotal++; }
+        if (scaled[key] < SP_CAP_PER_STAT) { scaled[key]++; scaledTotal++; }
       }
     }
     logger.warn('Nerd of Now set exceeded SP budget — scaled down proportionally', {
@@ -175,7 +174,7 @@ function parseSetObject(inner, pokemonName, setName) {
   let spMatch;
   while ((spMatch = spRegex.exec(spsStr)) !== null) {
     const spKey = EV_KEY_MAP[spMatch[1]] || spMatch[1];
-    sp[spKey] = Math.min(parseInt(spMatch[2], 10), SP_CAP);
+    sp[spKey] = Math.min(parseInt(spMatch[2], 10), SP_CAP_PER_STAT);
   }
 
   // Parse moves array
@@ -332,7 +331,7 @@ function parseSetObjectFromEntry(data, pokemonName, setName) {
   const sp = {};
   for (const [evKey, spKey] of Object.entries(EV_KEY_MAP)) {
     const raw = data.sps?.[evKey] ?? data.sps?.[spKey] ?? 0;
-    sp[spKey] = Math.min(raw, SP_CAP);
+    sp[spKey] = Math.min(raw, SP_CAP_PER_STAT);
   }
   const moves = (data.moves || []).filter(m => m && typeof m === 'string');
 
@@ -393,7 +392,7 @@ function extractPokemonEntries(body) {
       let evMatch;
       while ((evMatch = evRegex.exec(evsStr)) !== null) {
         const spKey = EV_KEY_MAP[evMatch[1]] || evMatch[1];
-        sps[spKey] = Math.min(parseInt(evMatch[2], 10), SP_CAP);
+        sps[spKey] = Math.min(parseInt(evMatch[2], 10), SP_CAP_PER_STAT);
       }
 
       const moves = [];
