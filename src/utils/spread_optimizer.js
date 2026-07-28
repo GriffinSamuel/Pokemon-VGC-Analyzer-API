@@ -1,11 +1,9 @@
 const path = require('path');
-const { SP_BUDGET_TOTAL, SP_CAP_PER_STAT, natureMultiplierFor, findBreakpoints } = require('./stat_formula');
+const { SP_BUDGET_TOTAL, SP_CAP_PER_STAT, natureMultiplierFor, findBreakpoints, STAT_ORDER, STAT_INDEX } = require('./stat_formula');
 const { scoreSpread, minimizeSpread } = require('./spread_scorer');
 const logger = require('./logger');
 const { getNerdOfNowSets } = require('./nerd_of_now');
 
-const STATS = ['hp', 'atk', 'def', 'spa', 'spd', 'spe'];
-const STAT_INDEX = { hp: 0, atk: 1, def: 2, spa: 3, spd: 4, spe: 5 };
 const EMPTY_LOCKED = new Set(); // default "no locked stats" for callers outside findOptimalSpread (e.g. direct tests)
 
 // SP validation + clamping (REGRESSION A): verify no stat exceeds 32 and
@@ -14,7 +12,7 @@ const EMPTY_LOCKED = new Set(); // default "no locked stats" for callers outside
 function validateSpread(sp) {
   const errors = [];
   let total = 0;
-  for (const stat of STATS) {
+  for (const stat of STAT_ORDER) {
     const val = sp[stat] || 0;
     total += val;
     if (val < 0) errors.push(`${stat} is negative: ${val}`);
@@ -26,12 +24,12 @@ function validateSpread(sp) {
 
 function clampSpread(sp) {
   const clamped = { ...sp };
-  for (const stat of STATS) {
+  for (const stat of STAT_ORDER) {
     if (clamped[stat] > SP_CAP_PER_STAT) clamped[stat] = SP_CAP_PER_STAT;
     if (clamped[stat] < 0) clamped[stat] = 0;
   }
   // Also enforce total 66 SP cap
-  let total = STATS.reduce((sum, s) => sum + (clamped[s] || 0), 0);
+  let total = STAT_ORDER.reduce((sum, s) => sum + (clamped[s] || 0), 0);
   if (total > SP_BUDGET_TOTAL) {
     const excess = total - SP_BUDGET_TOTAL;
     // Remove excess from least valuable stats first: unused offense, then def/spd, then HP, then Spe
@@ -93,12 +91,12 @@ function clamp(x, lo, hi) {
 }
 
 function spreadToArray(spread) {
-  return STATS.map((k) => spread[k] || 0);
+  return STAT_ORDER.map((k) => spread[k] || 0);
 }
 
 function arrayToSpread(values) {
   const spread = {};
-  STATS.forEach((k, i) => { spread[k] = values[i]; });
+  STAT_ORDER.forEach((k, i) => { spread[k] = values[i]; });
   return spread;
 }
 
@@ -117,7 +115,7 @@ function yieldToEventLoop() {
 // receives overflow budget, on top of already never being assigned any in the
 // first place — defensive, since values[lockedIndex] should already be 0.
 function redistributeOverflow(values, weights, lockedIndices = EMPTY_LOCKED) {
-  const descByWeight = STATS.map((_, i) => i).sort((a, b) => weights[b] - weights[a]);
+  const descByWeight = STAT_ORDER.map((_, i) => i).sort((a, b) => weights[b] - weights[a]);
   for (let i = 0; i < values.length; i++) {
     while (values[i] > SP_CAP_PER_STAT) {
       const excess = values[i] - SP_CAP_PER_STAT;
@@ -139,7 +137,7 @@ function redistributeOverflow(values, weights, lockedIndices = EMPTY_LOCKED) {
   let sum = sumArr(values);
   if (sum > SP_BUDGET_TOTAL) {
     let over = sum - SP_BUDGET_TOTAL;
-    const ascByWeight = STATS.map((_, i) => i).sort((a, b) => weights[a] - weights[b]);
+    const ascByWeight = STAT_ORDER.map((_, i) => i).sort((a, b) => weights[a] - weights[b]);
     for (const i of ascByWeight) {
       if (over <= 0) break;
       const take = Math.min(values[i], over);
@@ -228,7 +226,7 @@ function crossover(parentSpA, parentSpB, weights, lockedIndices = EMPTY_LOCKED) 
     values = values.map((v) => Math.floor(v * scale));
     for (const i of lockedIndices) values[i] = 0;
     let residual = SP_BUDGET_TOTAL - sumArr(values);
-    const descByWeight = STATS.map((_, i) => i).sort((x, y) => weights[y] - weights[x]).filter((i) => !lockedIndices.has(i));
+    const descByWeight = STAT_ORDER.map((_, i) => i).sort((x, y) => weights[y] - weights[x]).filter((i) => !lockedIndices.has(i));
     let idx = 0;
     while (residual !== 0 && idx < descByWeight.length * 4 && descByWeight.length > 0) {
       const i = descByWeight[idx % descByWeight.length];
@@ -249,7 +247,7 @@ function crossover(parentSpA, parentSpB, weights, lockedIndices = EMPTY_LOCKED) 
 function mutate(eliteSp, weights, lockedIndices = EMPTY_LOCKED) {
   const values = spreadToArray(eliteSp);
   for (const i of lockedIndices) values[i] = 0;
-  const mutableIndices = STATS.map((_, i) => i).filter((i) => !lockedIndices.has(i));
+  const mutableIndices = STAT_ORDER.map((_, i) => i).filter((i) => !lockedIndices.has(i));
   const numMutations = Math.min(1 + Math.floor(Math.random() * 3), mutableIndices.length);
   const indices = new Set();
   while (indices.size < numMutations) indices.add(mutableIndices[Math.floor(Math.random() * mutableIndices.length)]);
@@ -261,7 +259,7 @@ function mutate(eliteSp, weights, lockedIndices = EMPTY_LOCKED) {
   let sum = sumArr(values);
   if (sum > SP_BUDGET_TOTAL) {
     let over = sum - SP_BUDGET_TOTAL;
-    const ascByWeight = STATS.map((_, i) => i).sort((a, b) => weights[a] - weights[b]);
+    const ascByWeight = STAT_ORDER.map((_, i) => i).sort((a, b) => weights[a] - weights[b]);
     for (const i of ascByWeight) {
       if (over <= 0) break;
       const take = Math.min(values[i], over);
@@ -313,7 +311,7 @@ function generateNeighborhood(baseSpread, cap = LOCAL_SEARCH_CAP_PER_ELITE, lock
 
   function rec(i, current, sum) {
     if (results.length >= cap) return;
-    if (i === STATS.length) {
+    if (i === STAT_ORDER.length) {
       results.push(current.slice());
       return;
     }
@@ -342,7 +340,7 @@ function generateNeighborhood(baseSpread, cap = LOCAL_SEARCH_CAP_PER_ELITE, lock
 // findBreakpoints() dead zone (0 investment is trivially "efficient").
 function breakpointEfficiency(sp, pokemonRow, nature) {
   let efficient = 0;
-  for (const key of STATS) {
+  for (const key of STAT_ORDER) {
     const spVal = sp[key] || 0;
     if (spVal === 0) { efficient++; continue; }
     const isHp = key === 'hp';
@@ -427,7 +425,7 @@ async function findOptimalSpread(pokemon, nature, role, threatMatrix, metaContex
       if (!set.sp) continue;
       // Apply locked stat constraints to the seed (zero out locked stats)
       const seedSp = clampSpread({ ...set.sp });
-      for (const idx of lockedIndices) seedSp[STATS[idx]] = 0;
+      for (const idx of lockedIndices) seedSp[STAT_ORDER[idx]] = 0;
       POST_VALIDATION_HOOK(seedSp);
       population.push({ sp: seedSp, _seedLabel: set.label || 'Nerd of Now' });
       seededCount++;
@@ -605,7 +603,7 @@ async function findOptimalSpread(pokemon, nature, role, threatMatrix, metaContex
       generations,
       population_init: popInit,
       team_build: teamBuild,
-      locked_stats: [...lockedIndices].map((i) => STATS[i]),
+      locked_stats: [...lockedIndices].map((i) => STAT_ORDER[i]),
       sp_observations: evObservations ?? null,
     },
   };

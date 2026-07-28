@@ -14,6 +14,7 @@ const {
 const { getOrComputeEvolutionarySpread } = require('../utils/ev_optimizer');
 const { getNerdOfNowSets } = require('../utils/nerd_of_now');
 const { round } = require('../utils/format');
+const { STAT_ORDER } = require('../utils/stat_formula');
 const {
   getTypeMetaData, analyzeCoverage, analyzeSynergies, analyzeWeather,
   analyzeTrickRoom, analyzeSpeedTiers, analyzeWeaknesses, analyzeArchetypeMatchups,
@@ -639,7 +640,6 @@ function getCoOccurrenceScore(pokemonA, pokemonB) {
 // per-file vocabulary copies.
 const TEXT_DIVIDER_WIDTH = 41;
 const SHOWDOWN_STAT_LABELS = { hp: 'HP', atk: 'Atk', def: 'Def', spa: 'SpA', spd: 'SpD', spe: 'Spe' };
-const SP_ORDER = ['hp', 'atk', 'def', 'spa', 'spd', 'spe'];
 
 function sectionDivider(label) {
   const opening = `── ${label} `;
@@ -651,7 +651,7 @@ function sectionDivider(label) {
 // line means 0-252 numbers; showing 0-32 values under that label would misread
 // as a real EV spread that's ~8x too low.
 function evsLine(sp) {
-  const parts = SP_ORDER
+  const parts = STAT_ORDER
     .map((k) => ({ k, sp: sp[k] || 0 }))
     .filter((p) => p.sp > 0)
     .map((p) => `${p.sp} ${SHOWDOWN_STAT_LABELS[p.k]}`);
@@ -765,7 +765,7 @@ function buildSpAllocationWhy(member) {
   let justifiedSp = 0;
   let unspendableSp = 0;
 
-  for (const statKey of SP_ORDER) {
+  for (const statKey of STAT_ORDER) {
     const spVal = member.sp[statKey] || 0;
     if (spVal === 0) continue;
     const label = `${spVal} ${SHOWDOWN_STAT_LABELS[statKey]}`;
@@ -841,7 +841,7 @@ function buildTeamBuildText(responseBody, team) {
     for (const member of team) {
       if (member.seed_info) {
         const seed = member.seed_info;
-        const spParts = SP_ORDER.filter(s => (seed.sp[s] || 0) > 0).map(s => `${seed.sp[s]} ${SHOWDOWN_STAT_LABELS[s]}`);
+        const spParts = STAT_ORDER.filter(s => (seed.sp[s] || 0) > 0).map(s => `${seed.sp[s]} ${SHOWDOWN_STAT_LABELS[s]}`);
         const spLabel = spParts.length > 0 ? ` (${spParts.join(' / ')})` : '';
         const verdict = seed.converged
           ? `→ optimizer converged to similar spread`

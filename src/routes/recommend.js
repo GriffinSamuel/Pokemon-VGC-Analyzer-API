@@ -12,7 +12,7 @@ const { getThreatMatrix } = require('../utils/threat_matrix');
 const { getMetaContext } = require('../utils/speed_context');
 const { classifyRole } = require('../utils/role_classifier');
 const { scoreSpread } = require('../utils/spread_scorer');
-const { calcStat, natureMultiplierFor, SP_CAP_PER_STAT } = require('../utils/stat_formula');
+const { calcStat, natureMultiplierFor, SP_CAP_PER_STAT, STAT_ORDER } = require('../utils/stat_formula');
 const { round } = require('../utils/format');
 const { getSpeciesRow, getNatureDistribution, getMostCommonSpread, getCommonSpeedTiers } = require('../utils/ev_observations');
 
@@ -783,14 +783,12 @@ router.get('/evs/:pokemon', async (req, res, next) => {
 // separate/approximate scoring path, so a score returned here is directly
 // comparable to an evolutionary result's score for the same pokemon+nature.
 
-const SP_STAT_ORDER = ['hp', 'atk', 'def', 'spa', 'spd', 'spe'];
-
 function parseSpParam(spParam) {
   if (!spParam) return null;
   const parts = String(spParam).split('-').map(Number);
   if (parts.length !== 6 || parts.some((n) => !Number.isInteger(n) || n < 0 || n > 32)) return null;
   const sp = {};
-  SP_STAT_ORDER.forEach((key, i) => { sp[key] = parts[i]; });
+  STAT_ORDER.forEach((key, i) => { sp[key] = parts[i]; });
   return sp;
 }
 

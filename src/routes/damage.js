@@ -6,6 +6,7 @@ const { normalizePokemonName } = require('../utils/normalize');
 const { getMostCommonSpread } = require('../utils/ev_observations');
 const { CalcDamage, buildStatsFromSP } = require('../utils/nerd_of_now_calc');
 const logger = require('../utils/logger');
+const { STAT_ORDER } = require('../utils/stat_formula');
 
 // Helper: convert classic EVs (0-252) to Stat Points (0-32)
 function evsToSp(evs) {
@@ -45,7 +46,6 @@ function toNormalizedLower(name, item) {
   return (normalizePokemonName(id, item) || name || "").toLowerCase();
 }
 
-const EV_STAT_KEYS = ['hp', 'atk', 'def', 'spa', 'spd', 'spe'];
 const MAX_EV_PER_STAT = 252;
 const MAX_EV_TOTAL = 508;
 
@@ -56,8 +56,8 @@ function validateEvs(evs, label) {
   }
   let total = 0;
   for (const [key, value] of Object.entries(evs)) {
-    if (!EV_STAT_KEYS.includes(key)) {
-      return `${label}.evs has unknown stat "${key}" — must be one of ${EV_STAT_KEYS.join(', ')}`;
+    if (!STAT_ORDER.includes(key)) {
+      return `${label}.evs has unknown stat "${key}" — must be one of ${STAT_ORDER.join(', ')}`;
     }
     if (typeof value !== 'number' || !Number.isInteger(value) || value < 0 || value > MAX_EV_PER_STAT) {
       return `${label}.evs.${key} must be an integer between 0 and ${MAX_EV_PER_STAT}`;

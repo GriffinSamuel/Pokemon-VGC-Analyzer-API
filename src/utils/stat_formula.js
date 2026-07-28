@@ -8,6 +8,11 @@ const SP_BUDGET_TOTAL = 66;
 const SP_STEPS = [];
 for (let sp = 0; sp <= SP_CAP_PER_STAT; sp++) SP_STEPS.push(sp);
 
+// Stat-order array + index map — single source of truth for the 6-stat key order.
+// Replaces scattered EV_STAT_KEYS, SP_ORDER, SP_STAT_ORDER, STATS definitions.
+const STAT_ORDER = ['hp', 'atk', 'def', 'spa', 'spd', 'spe'];
+const STAT_INDEX = { hp: 0, atk: 1, def: 2, spa: 3, spd: 4, spe: 5 };
+
 // Same nature +/- stat table as the rest of this project (team.js's NATURE_BOOSTS,
 // features.py's NATURE_MODIFIERS) — Champions calls this "Alignment" but it's the
 // identical 0.9/1.0/1.1 table, duplicated locally per this project's convention.
@@ -97,6 +102,8 @@ module.exports = {
   SP_CAP_PER_STAT,
   SP_BUDGET_TOTAL,
   SP_STEPS,
+  STAT_ORDER,
+  STAT_INDEX,
   spToEv,
   calcStat,
   findBreakpoints,

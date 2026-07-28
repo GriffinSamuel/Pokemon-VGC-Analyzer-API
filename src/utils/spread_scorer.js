@@ -1,7 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const pool = require('../db/pool');
-const { calcStat, natureMultiplierFor, SP_CAP_PER_STAT, SP_BUDGET_TOTAL } = require('./stat_formula');
+const { calcStat, natureMultiplierFor, SP_CAP_PER_STAT, SP_BUDGET_TOTAL, STAT_ORDER } = require('./stat_formula');
 const { getCommonSpreads, getCommonSpeedTiers, getSpeciesRow, getTopDamageAffectingItem } = require('./ev_observations');
 const { getSpeedModifiers, trickroomRelevant } = require('./speed_context');
 const { itemBreakpointBonus, OFFENSIVE_ROLES } = require('./item_optimizer');
@@ -1038,7 +1038,6 @@ function getStatDecreasePriority(role, pokemonRow) {
 // remainder (66 − allocated). Hard 32 per-stat cap and total 66 SP cap enforced.
 // Returns { minimized_sp, reductions, unspendable, final_stats, thresholds_met }
 async function minimizeSpread(pokemon, sp, nature, role, threatMatrix, metaContext, item, fieldOpts) {
-  const STATS = ['hp', 'atk', 'def', 'spa', 'spd', 'spe'];
   const opts = { detailed: true, item, ...(fieldOpts ? { fieldOpts } : {}) };
   const baseline = await scoreSpread(pokemon, sp, nature, role, threatMatrix, metaContext, opts);
   const baselineThresholds = baseline.thresholds_met || [];
@@ -1050,7 +1049,7 @@ async function minimizeSpread(pokemon, sp, nature, role, threatMatrix, metaConte
   const reductions = {};
 
   // STEP 1: Strip SP from stats with no attributed thresholds
-  for (const stat of STATS) {
+  for (const stat of STAT_ORDER) {
     const startVal = minimizedSp[stat] || 0;
     if (startVal <= 0) continue;
     if (!attributedStats.has(stat)) {
@@ -1084,12 +1083,12 @@ async function minimizeSpread(pokemon, sp, nature, role, threatMatrix, metaConte
   }
 
   // Hard 32 per-stat cap enforcement
-  for (const stat of STATS) {
+  for (const stat of STAT_ORDER) {
     if (minimizedSp[stat] > SP_CAP_PER_STAT) minimizedSp[stat] = SP_CAP_PER_STAT;
   }
 
   // Enforce total 66 SP cap — assert on violation
-  const totalUsed = STATS.reduce((sum, s) => sum + (minimizedSp[s] || 0), 0);
+  const totalUsed = STAT_ORDER.reduce((sum, s) => sum + (minimizedSp[s] || 0), 0);
   if (totalUsed > SP_BUDGET_TOTAL) {
     throw new Error(`SP cap violation: total ${totalUsed} exceeds budget ${SP_BUDGET_TOTAL} for ${pokemon.name || pokemon}`);
   }
