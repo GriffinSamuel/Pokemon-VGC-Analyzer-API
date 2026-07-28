@@ -6,15 +6,15 @@
  * File fetched: script_res/setdex_ncp-g10.js (Gen 10 Champions M-B competitive sets)
  *
  * File format: JavaScript with `var setdex = {};` followed by `setdex["Name"] = {...}`
- * assignments. Each set contains: evs (classic 0-252 format, abbreviated keys),
+ * assignments. Each set contains: sps (Champions Stat Points 0-32, abbreviated keys),
  * nature, optional ability, optional item, optional tera_type, moves array.
- * Abbreviated EV keys: hp/hp, at/atk, df/def, sa/spa, sd/spd, sp/spe.
+ * Abbreviated SP keys: hp, at/atk, df/def, sa/spa, sd/spd, sp/spe.
  *
  * This module:
  * 1. Fetches the raw JS file from GitHub on first use
  * 2. Parses it using regex-based extraction (not eval — the file is fetched from
  *    an external URL, so eval would be a security risk)
- * 3. Converts classic EVs to Champions Stat Points (0-32 per stat, 66 total)
+ * 3. Values are already Champions Stat Points (0-32 per stat, 66 total) — used directly
  * 4. Normalizes Pokemon names using normalize.js for DB-format compatibility
  * 5. Caches parsed sets locally in src/ml/data/nerd_of_now_sets.json
  * 6. Refreshes the cache once every 24 hours or on server restart
@@ -162,23 +162,21 @@ function extractField(str, fieldName) {
  * Parse a single set object string into a structured set object.
  */
 function parseSetObject(inner, pokemonName, setName) {
-  const evsStr = extractField(inner, 'evs');
+  const spsStr = extractField(inner, 'sps');
   const nature = extractField(inner, 'nature');
   const item = extractField(inner, 'item');
   const movesStr = extractField(inner, 'moves');
 
-  if (!evsStr || !nature) return null;
+  if (!spsStr || !nature) return null;
 
-  // Parse EV object: "hp":0, "at":252, etc.
-  const evs = {};
-  const evRegex = /"([a-z]+)"\s*:\s*(\d+)/g;
-  let evMatch;
-  while ((evMatch = evRegex.exec(evsStr)) !== null) {
-    evs[evMatch[1]] = parseInt(evMatch[2], 10);
+  // Parse SP object directly: "hp":2, "at":0, "sa":32, etc. — already 0-32 SP format
+  const sp = {};
+  const spRegex = /"([a-z]+)"\s*:\s*(\d+)/g;
+  let spMatch;
+  while ((spMatch = spRegex.exec(spsStr)) !== null) {
+    const spKey = EV_KEY_MAP[spMatch[1]] || spMatch[1];
+    sp[spKey] = Math.min(parseInt(spMatch[2], 10), SP_CAP);
   }
-
-  // Convert to SP
-  const sp = convertEVsToSP(evs);
 
   // Parse moves array
   const moves = [];
@@ -292,7 +290,7 @@ async function fetchAndParse() {
     const parsedSets = [];
     for (const [setName, setData] of Object.entries(setsObj)) {
       if (!setData || typeof setData !== 'object') continue;
-      if (!setData.evs || !setData.nature) continue;
+      if (!setData.sps || !setData.nature) continue;
 
       try {
         const parsed = parseSetObjectFromEntry(setData, sourceName, setName);
@@ -330,8 +328,12 @@ async function fetchAndParse() {
  * Parse a set entry from a pre-parsed JS object (already has evs, nature, moves etc.)
  */
 function parseSetObjectFromEntry(data, pokemonName, setName) {
-  const evs = data.evs || {};
-  const sp = convertEVsToSP(evs);
+  // Data is already in SP format (0-32) — use directly, no conversion needed
+  const sp = {};
+  for (const [evKey, spKey] of Object.entries(EV_KEY_MAP)) {
+    const raw = data.sps?.[evKey] ?? data.sps?.[spKey] ?? 0;
+    sp[spKey] = Math.min(raw, SP_CAP);
+  }
   const moves = (data.moves || []).filter(m => m && typeof m === 'string');
 
   const normalizedName = normalizePokemonName(
@@ -379,18 +381,19 @@ function extractPokemonEntries(body) {
       const setStr = innerStr.slice(setStart, setEnd);
 
       // Extract fields from the set string
-      const evsStr = extractField(setStr, 'evs');
+      const evsStr = extractField(setStr, 'sps');
       const nature = extractField(setStr, 'nature');
       const item = extractField(setStr, 'item');
       const movesStr = extractField(setStr, 'moves');
 
       if (!evsStr || !nature) continue;
 
-      const evs = {};
+      const sps = {};
       const evRegex = /"([a-z]+)"\s*:\s*(\d+)/g;
       let evMatch;
       while ((evMatch = evRegex.exec(evsStr)) !== null) {
-        evs[evMatch[1]] = parseInt(evMatch[2], 10);
+        const spKey = EV_KEY_MAP[evMatch[1]] || evMatch[1];
+        sps[spKey] = Math.min(parseInt(evMatch[2], 10), SP_CAP);
       }
 
       const moves = [];
@@ -400,7 +403,7 @@ function extractPokemonEntries(body) {
         while ((m = moveRegex.exec(movesStr)) !== null) moves.push(m[1]);
       }
 
-      pokemonObj[setName] = { evs, nature: nature || 'Hardy', item: item || undefined, moves };
+      pokemonObj[setName] = { sps, nature: nature || 'Hardy', item: item || undefined, moves };
     }
 
     if (Object.keys(pokemonObj).length > 0) {
