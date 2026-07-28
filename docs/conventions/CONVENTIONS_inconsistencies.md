@@ -3,7 +3,11 @@
 Every place where two files do the same thing differently, duplicated logic that could drift, varying naming, or differing format strings for the same concept.
 
 **Severity:** P0 = correctness risk, P1 = maintenance risk, P2 = cosmetic.
-**Status:** Each entry is current as of the last full read (2026-07-24).
+**Status:** Each entry is current as of the last full read (2026-07-28).
+- **FIXED (f0382c7):** `round()` helper consolidated into `src/utils/format.js`
+- **FIXED (ba42827):** `nerd_of_now.js` imports `SP_CAP_PER_STAT`/`SP_BUDGET_TOTAL` from `stat_formula.js`
+- **FIXED (ba42827):** `limitless.js` switched to `recordHealth()` wrapper
+- **FIXED (edf1e83):** `STAT_ORDER`/`STAT_INDEX` consolidated into `stat_formula.js`
 
 ---
 
