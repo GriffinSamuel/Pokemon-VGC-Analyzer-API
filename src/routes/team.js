@@ -747,17 +747,38 @@ function describeThresholdForWhy(t, allDefensiveThresholds, statKey) {
   return t.threat;
 }
 
-// One line per invested stat, showing the highest-contribution real threshold
-// (from the evolutionary result's thresholds_met, stat-tagged in
-// spread_scorer.js) that stat's investment addresses. A 0 SP stat is omitted
-// entirely. A stat with no matching threshold falls back to a role-based note
-// for the Pokemon's own primary offensive stat, or a generic breakpoint note
-// otherwise — never fabricated beyond what thresholds_met/role already say.
+// KO tier ordering used to determine the binding constraint — the threshold
+// that achieved the most KO-tier improvement against baseline requires the
+// most SP in the stat and is the true binding constraint.
+const KO_TIERS_LOCAL = ['OHKO', '2HKO', '3HKO', '4HKO', 'no_ko'];
+function koTierDelta(t) {
+  if (!t.baseline_ko || !t.this_spread_ko) return 0;
+  const bIdx = KO_TIERS_LOCAL.indexOf(t.baseline_ko);
+  const nIdx = KO_TIERS_LOCAL.indexOf(t.this_spread_ko);
+  return (bIdx >= 0 && nIdx >= 0) ? nIdx - bIdx : 0;
+}
+
+// One line per invested stat, showing the binding-constraint real threshold
+// (from the evolutionary result's thresholds_met) that stat's investment
+// addresses. The primary is the threshold with the largest KO-tier delta
+// from baseline — the binding constraint. Contribution (popularity) breaks
+// ties. A 0 SP stat is omitted entirely. A stat with no matching threshold
+// falls back to a role-based note for the Pokemon's own primary offensive
+// stat, or a generic breakpoint note otherwise — never fabricated beyond
+// what thresholds_met/role already say.
 function buildSpAllocationWhy(member) {
   const bestByStat = {};
   for (const t of member.thresholds_met || []) {
     if (!t.stat) continue;
-    if (!bestByStat[t.stat] || t.contribution > bestByStat[t.stat].contribution) bestByStat[t.stat] = t;
+    if (!bestByStat[t.stat]) {
+      bestByStat[t.stat] = t;
+    } else {
+      const curDelta = koTierDelta(t);
+      const bestDelta = koTierDelta(bestByStat[t.stat]);
+      if (curDelta > bestDelta || (curDelta === bestDelta && t.contribution > bestByStat[t.stat].contribution)) {
+        bestByStat[t.stat] = t;
+      }
+    }
   }
   const primaryOffenseStat = member.pokemonRow.atk >= member.pokemonRow.spa ? 'atk' : 'spa';
   const allDefensiveThresholds = (member.thresholds_met || []).filter(t => t.category === 'defensive');
