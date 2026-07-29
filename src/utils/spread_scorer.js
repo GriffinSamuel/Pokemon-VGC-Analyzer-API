@@ -1031,9 +1031,12 @@ function getStatDecreasePriority(role, pokemonRow) {
   return priority;
 }
 
-// SP minimization: strips SP from stats with no attributed thresholds (STEP 1),
-// then performs downward minimization (STEP 2) — greedily decreases each stat
-// by 1 SP, keeping the decrease if the score (all interactions) is unchanged.
+// SP minimization: greedily decreases each stat by 1 SP, keeping the decrease
+// if the score (all interactions) is unchanged. Every point is verified via
+// scoreSpread() before removal — there is no bulk-strip step, so defensive SP
+// that is load-bearing for a threshold attributed to a different stat (e.g., Def
+// enabling an HP-tagged survival threshold) is never silently removed.
+// Priority: HP → relevant defense → relevant offense → remaining → speed.
 // Repeats until no stat can be decreased further. Reports unspendable SP as the
 // remainder (66 − allocated). Hard 32 per-stat cap and total 66 SP cap enforced.
 // Returns { minimized_sp, reductions, unspendable, final_stats, thresholds_met }
@@ -1042,23 +1045,10 @@ async function minimizeSpread(pokemon, sp, nature, role, threatMatrix, metaConte
   const baseline = await scoreSpread(pokemon, sp, nature, role, threatMatrix, metaContext, opts);
   const baselineThresholds = baseline.thresholds_met || [];
 
-  // Find which stats have at least one attributed threshold
-  const attributedStats = new Set(baselineThresholds.map(t => t.stat));
-
   const minimizedSp = { ...sp };
   const reductions = {};
 
-  // STEP 1: Strip SP from stats with no attributed thresholds
-  for (const stat of STAT_ORDER) {
-    const startVal = minimizedSp[stat] || 0;
-    if (startVal <= 0) continue;
-    if (!attributedStats.has(stat)) {
-      reductions[stat] = { from: startVal, to: 0, saved: startVal };
-      minimizedSp[stat] = 0;
-    }
-  }
-
-  // STEP 2: Downward minimization — try decreasing each stat by 1 SP.
+  // Downward minimization — try decreasing each stat by 1 SP.
   // If the score (all interactions) is unchanged, keep the decrease.
   // Priority: HP → relevant defense → relevant offense → remaining → speed.
   // Repeat until no decreases are possible.
@@ -1076,6 +1066,9 @@ async function minimizeSpread(pokemon, sp, nature, role, threatMatrix, metaConte
         if (testResult.score >= currentScore - 1e-9) {
           minimizedSp[stat] = minimizedSp[stat] - 1;
           currentScore = testResult.score;
+          if (!reductions[stat]) reductions[stat] = { from: sp[stat] || 0, to: minimizedSp[stat], saved: 0 };
+          reductions[stat].to = minimizedSp[stat];
+          reductions[stat].saved += 1;
           improved = true;
         }
       } catch (_) { /* skip failed calc */ }
