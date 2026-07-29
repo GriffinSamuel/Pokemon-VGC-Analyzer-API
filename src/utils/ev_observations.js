@@ -2,10 +2,13 @@ const pool = require('../db/pool');
 const { calcStat, natureMultiplierFor } = require('./stat_formula');
 const { round } = require('./format');
 
-// pokemon has zero -Mega rows (documented gap — see CLAUDE.md), so a Mega's
-// normalized_name ("Swampert-Mega") never matches directly. Fall back to
-// progressively shorter hyphenated prefixes, same pattern as recommend.js's
-// topMovesFor().
+// Fall back to progressively shorter hyphenated prefixes for Mega forms
+// (e.g. "swampert-mega" → "swampert"). Most Megas DO have their own DB rows
+// (90 of them), but ~23 species (Aerodactyl-Mega, Alakazam-Mega, etc.) have
+// Mega rows without a base-form row — and the first query with the full key
+// already catches the 90 that exist. The fallback is a safety net for any
+// hyphenated suffix (not just "-mega") that happens to lack a DB row, same
+// pattern as recommend.js's topMovesFor().
 async function getSpeciesRow(normalizedNameLower) {
   let key = normalizedNameLower;
   while (key) {

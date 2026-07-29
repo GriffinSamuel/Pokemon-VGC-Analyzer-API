@@ -1098,13 +1098,21 @@ async function minimizeSpread(pokemon, sp, nature, role, threatMatrix, metaConte
 
   const finalStats = computeFinalStats(pokemon, minimizedSp, nature);
 
+  // Re-score with the final minimized spread so thresholds_met match the
+  // displayed spread exactly — no pre-minimization numbers leak through.
+  let finalThresholds = baselineThresholds;
+  try {
+    const finalResult = await scoreSpread(pokemon, minimizedSp, nature, role, threatMatrix, metaContext, opts);
+    finalThresholds = finalResult.thresholds_met || [];
+  } catch (_) { /* fall through — keep baselineThresholds if re-score fails */ }
+
   return {
     minimized_sp: minimizedSp,
     reductions,
     unspendable,
     final_stats: finalStats,
     baseline_score: baseline.score,
-    thresholds_met: baselineThresholds,
+    thresholds_met: finalThresholds,
   };
 }
 

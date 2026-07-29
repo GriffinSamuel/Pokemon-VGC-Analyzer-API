@@ -13,15 +13,23 @@ Every place where two files do the same thing differently, duplicated logic that
 
 ## P0 — Correctness Risk
 
-### 1. Species resolution fallback differs between ev_observations.js and normalize.js
+### 1. Species resolution fallback differs between ev_observations.js and normalize.js (INVESTIGATED — NOT A CODE INCONSISTENCY)
 
 **Files:**
-- `ev_observations.js:13-26` — `getSpeciesRow()` uses its own hyphen-strip fallback loop (`key.split('-').slice(0, -1)`)
-- `normalize.js:normalizePokemonName()` — multi-step resolution chain (exact match → DB → `@pkmn/dex` → hyphen-strip → manual map)
+- `ev_observations.js:9-18` — `getSpeciesRow()` queries DB directly, hyphen-strip fallback for -suffix forms
+- `normalize.js:126-139` — `normalizePokemonName()` multi-step chain: `MEGA_ITEM_MAP` → `MANUAL_MAP` → `@pkmn/dex` → title-case fallback
 
-**Issue:** A Mega form that resolves via one path may fail the other. The two functions have different fallback strategies for the same problem (resolving a Pokemon name to its DB row).
+**Finding (2026-07-28):** The two functions serve different purposes and are NOT inconsistent by design:
+- `getSpeciesRow()` returns a **DB row** (for base stats, types) — cannot use `normalizePokemonName` because that returns a string, not a row
+- `normalizePokemonName()` returns a **display name string** — uses `@pkmn/dex` and manual maps
 
-**Verified at:** Both functions confirmed by full file reads.
+**Stale comment fixed:** The old comment claimed "pokemon has zero -Mega rows" — false (there are 90 Mega rows in the DB). Updated to reflect reality: the hyphen-strip is a safety net for any hyphenated suffix lacking a DB row.
+
+**Root cause:** 23 species (Aerodactyl-Mega, Alakazam-Mega, etc.) have Mega rows but NO base-form row in the `pokemon` table. This is a DB seeding gap, not a code inconsistency — if the base-form row existed, `getSpeciesRow("aerodactyl-mega")` → strip to "aerodactyl" → would find the base row.
+
+**Status:** Not a code-level inconsistency. The hyphen-strip fallback is correctly needed. The true correctness risk is the 23 missing base-form rows in the `pokemon` table (separate DB seeding task). Update comment if the seeding gap is closed.
+
+**Verified at:** Both functions confirmed by full file reads + DB queries (90 Mega rows confirmed, 23 species with Mega-only coverage confirmed).
 
 ---
 
@@ -45,7 +53,7 @@ Every place where two files do the same thing differently, duplicated logic that
 
 ---
 
-### 3. Nature modifiers triplicated
+### 3. Nature modifiers triplicated (ACCEPTED — CROSS-LANGUAGE)
 
 **Files:**
 - `stat_formula.js:14-28` — `NATURE_MODIFIERS` (array of `[boosted, hindered]` stat names)
@@ -54,11 +62,13 @@ Every place where two files do the same thing differently, duplicated logic that
 
 **Issue:** Same nature table in 3 places with different data structures (array vs dict vs inline object). Adding a nature requires updating all three.
 
+**Status:** Accepted — the Python copy (#10 below) is inherently duplicated cross-language. The `team.js` inline is for a different purpose (display formatting) and can't easily share the JS array format. Consider a generator script if natures ever change, but they haven't since Gen 6.
+
 **Verified at:** All three locations confirmed by full file reads.
 
 ---
 
-### 4. role_classifier.js (rule-based) vs train_evs.py (ML) — two role systems
+### 4. role_classifier.js (rule-based) vs train_evs.py (ML) — two role systems (ACCEPTED — BY DESIGN)
 
 **Files:**
 - `role_classifier.js:15-37` — rule-based classification (base stats + support ratio thresholds)
@@ -66,17 +76,21 @@ Every place where two files do the same thing differently, duplicated logic that
 
 **Issue:** Two different role classification systems with the same 4-role vocabulary. `role_classifier.js` is used at runtime; `train_evs.py`'s model generates `ev_recommendations.json` (which `role_classifier.js` reads for SP observation data). The ML model and rule system can disagree on a Pokemon's role.
 
+**Status:** Accepted by design. The rule-based system is the runtime primary classifier; ML-produced roles serve as training-data signals and cross-validation. The two systems being independent is intentional — `role_classifier.js:32-36` uses ML output as an advisory input, not as the sole determinant.
+
 **Verified at:** Both confirmed by full file reads. `role_classifier.js:32-36` checks ML output but uses rules as primary classifier.
 
 ---
 
-### 5. WEATHER_SETTERS exists in both synergy_reasons.js and item_optimizer.js
+### 5. WEATHER_SETTERS exists in both synergy_reasons.js and item_optimizer.js (ACCEPTED — SAME ROOT CAUSE AS #2)
 
 **Files:**
 - `synergy_reasons.js:7-9` — `{Drizzle: 'Rain', Drought: 'Sun', 'Sand Stream': 'Sand', 'Snow Warning': 'Snow'}`
 - `item_optimizer.js:80-85` — `WEATHER_SETTER_ABILITIES` (same 4 abilities, same weather strings)
 
 **Issue:** Nearly identical tables with different variable names. `item_optimizer.js`'s is calc-oriented while `synergy_reasons.js`'s is reasoning-oriented, but the actual content is the same.
+
+**Status:** Accepted — same root cause as #2. Each copy serves a different purpose. Add to all locations if weather setter abilities change.
 
 **Verified at:** Both confirmed by full file reads.
 
@@ -96,13 +110,15 @@ Every place where two files do the same thing differently, duplicated logic that
 
 ---
 
-### 7. pool.js uses console.error instead of logger.error
+### 7. pool.js uses console.error instead of logger.error (ACCEPTED — INITIALIZATION ORDER)
 
 **Files:**
 - `pool.js:12` — `console.error('Unexpected DB error', err)`
 - All other files — `logger.error()`
 
 **Issue:** DB errors bypass the structured logging system. Likely intentional since `pool.js` is required before `logger.js` is available, but means DB errors are not captured in the error log file.
+
+**Status:** Accepted — `pool.js` is loaded before `logger.js` can be initialized, so `console.error` is the only option. Not fixable without circular dependency or lazy initialization.
 
 **Verified at:** `pool.js:12` confirmed.
 
@@ -121,7 +137,7 @@ Every place where two files do the same thing differently, duplicated logic that
 
 ---
 
-### 9. DAMAGE_AFFECTING_ITEMS defined in ev_observations.js, re-exported in spread_scorer.js
+### 9. DAMAGE_AFFECTING_ITEMS defined in ev_observations.js, re-exported in spread_scorer.js (ACCEPTED — DATA OWNERSHIP)
 
 **Files:**
 - `ev_observations.js:229` — defines `DAMAGE_AFFECTING_ITEMS` (Set of item names)
@@ -129,17 +145,21 @@ Every place where two files do the same thing differently, duplicated logic that
 
 **Issue:** Item vocabulary lives in the data layer (`ev_observations.js`) but is conceptually a damage-calc concern. Consumed only by `spread_scorer.js` and `team_analyzer.js`.
 
+**Status:** Accepted — the items list is needed where observations are parsed (ev_observations.js) to extract damage-affecting items. The re-export is a convenience to avoid requiring both files. Moving it would add a module without reducing coupling.
+
 **Verified at:** Confirmed by import analysis.
 
 ---
 
-### 10. NATURE_MODIFIERS uses array format in JS, dict format in Python
+### 10. NATURE_MODIFIERS uses array format in JS, dict format in Python (ACCEPTED — CROSS-LANGUAGE)
 
 **Files:**
 - `stat_formula.js:14-28` — Array: `lonely: ['atk', 'def']` (boosted, hindered)
 - `features.py:26-49` — Dict: `{"lonely": ("atk", "def")}`
 
 **Issue:** Same data, different structural formats. Semantic content is identical but any cross-language comparison must convert between formats.
+
+**Status:** Accepted — cross-language duplication is inherent. Python's training scripts read this data directly and need the dict format for pandas/ML pipelines.
 
 **Verified at:** Both confirmed by full file reads.
 
