@@ -302,10 +302,10 @@ async function getTopAttackerSpreads(nameLower) {
     const { spreads } = await getCommonSpreads(nameLower);
     const top3 = spreads.slice(0, 3);
     if (top3.length === 0) {
-      return [{ sp: ZERO_SP, nature: null, frequency: 1 }];
+      return [{ sp: ZERO_SP, nature: null, frequency: 1, raw_frequency: 1 }];
     }
     const totalFreq = top3.reduce((sum, s) => sum + s.frequency, 0);
-    return top3.map((s) => ({ sp: s.sp, nature: s.nature, frequency: totalFreq > 0 ? s.frequency / totalFreq : 1 / top3.length }));
+    return top3.map((s) => ({ sp: s.sp, nature: s.nature, frequency: totalFreq > 0 ? s.frequency / totalFreq : 1 / top3.length, raw_frequency: s.frequency }));
   })();
   attackerSpreadsCache.set(nameLower, promise);
   return promise;
@@ -423,7 +423,7 @@ async function weightedDefensiveDamage({ attackerRow, move, attackerSpreads, att
 
     mins.push(calcResult.minPercent);
     maxs.push(calcResult.maxPercent);
-    perSpread.push({ sp: spread.sp, nature: spreadNature, item: attackerItem || null, frequency: round(spread.frequency) });
+    perSpread.push({ sp: spread.sp, nature: spreadNature, item: attackerItem || null, frequency: round(spread.frequency), raw_frequency: spread.raw_frequency });
   }
 
   if (mins.length === 0) return { weightedMin: 0, weightedMax: 0, koCheckValue: 0, perSpread };
@@ -469,7 +469,7 @@ async function weightedOffensiveDamage({ attackerRow, attackerSp, attackerNature
 
     mins.push(calcResult.minPercent);
     maxs.push(calcResult.maxPercent);
-    perSpread.push({ sp: spread.sp, nature: targetNature, frequency: round(spread.frequency) });
+    perSpread.push({ sp: spread.sp, nature: targetNature, frequency: round(spread.frequency), raw_frequency: spread.raw_frequency });
   }
 
   if (mins.length === 0) return { weightedMin: 0, weightedMax: 0, koCheckValue: 0, perSpread };

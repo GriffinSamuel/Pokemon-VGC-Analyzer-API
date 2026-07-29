@@ -679,15 +679,31 @@ function extractAttackerName(th) {
   const parts = (th.threat || '').split(' ');
   return th.attacker || parts[0] || '';
 }
+// Builds a frequency note from the most common attacker/target spread.
+// Shows "X% of Species" when raw_frequency is available and meaningful,
+// otherwise returns empty string.
+// For defensive thresholds the species is the attacker; for offensive
+// thresholds (threat string has " vs. ") it's the target/defender.
+function buildFrequencyNote(threshold) {
+  const spread = threshold.attacker_spreads_used?.[0];
+  if (!spread || typeof spread.raw_frequency !== 'number') return '';
+  const freqPct = Math.round(spread.raw_frequency * 100);
+  if (freqPct <= 0 || freqPct >= 100) return '';
+  // Offensive format: "Attacker Move vs. Target" — frequency is the target's
+  const vsMatch = (threshold.threat || '').match(/ vs\. (\S+)/);
+  const speciesName = vsMatch ? vsMatch[1] : extractAttackerName(threshold);
+  return speciesName ? `, ${freqPct}% of ${speciesName}` : '';
+}
 function describeThresholdForWhy(t, allDefensiveThresholds, statKey) {
   if (t.category === 'speed') return t.threat.replace(/^Outspeed /, 'outspeeds ');
   if (t.category === 'defensive') {
     const recoilText = buildRecoilText(extractMoveName(t), t.weighted_damage_min || 0, t.weighted_damage_max || 0);
+    const freqNote = buildFrequencyNote(t);
     let primaryText;
     if (t.attacker_build && typeof t.weighted_damage_min === 'number') {
-      primaryText = `survives ${t.threat} (${t.attacker_build}: ${t.weighted_damage_min}-${t.weighted_damage_max}%${recoilText})`;
+      primaryText = `survives ${t.threat} (${t.attacker_build}: ${t.weighted_damage_min}-${t.weighted_damage_max}%${recoilText}${freqNote})`;
     } else {
-      primaryText = `survives ${t.threat} (${t.this_spread_ko}${recoilText})`;
+      primaryText = `survives ${t.threat} (${t.this_spread_ko}${recoilText}${freqNote})`;
     }
 
     // FIX 4: secondary interactions — top 4 closest-to-OHKO, ordered by max damage descending
@@ -711,7 +727,8 @@ function describeThresholdForWhy(t, allDefensiveThresholds, statKey) {
           // FIX 3: show full attacker build in secondary interactions
           const buildLabel = th.attacker_build ? `, ${th.attacker_build}` : '';
           const secRecoil = buildRecoilText(th.moveName, th.weighted_damage_min || 0, th.weighted_damage_max || 0);
-          return `${th.attackerName} ${th.moveName} (${range}${buildLabel}${secRecoil})`;
+          const secFreq = buildFrequencyNote(th);
+          return `${th.attackerName} ${th.moveName} (${range}${buildLabel}${secRecoil}${secFreq})`;
         });
         return `${primaryText}\n     [also: ${secondaryParts.join(' | ')}]`;
       }
@@ -728,7 +745,7 @@ function describeThresholdForWhy(t, allDefensiveThresholds, statKey) {
     const targetName = match ? match[3] : '';
     if (moveName && targetName) {
       const spreadInfo = t.attacker_spreads_used?.[0];
-      const spreadFreq = spreadInfo?.frequency ? `${Math.round(spreadInfo.frequency * 100)}%` : '';
+      const offFreqNote = buildFrequencyNote(t);
       // FIX 8: Special moves must show defender's SpD, Physical moves must show Def
       // attacker_build format: "Nature SpVal Atk/SpA Item" — check the offensive stat label
       const isSpecialAttacker = t.attacker_build && (t.attacker_build.includes('SpA'));
@@ -737,9 +754,8 @@ function describeThresholdForWhy(t, allDefensiveThresholds, statKey) {
       const defDescription = spreadInfo ? `${spreadInfo.sp.hp || 0}HP/${spreadInfo.sp[defStatKey] || 0}${defStatLabel}` : '';
       const range = typeof t.weighted_damage_min === 'number' ? `${t.weighted_damage_min}-${t.weighted_damage_max}%` : '';
       const recoilPart = buildRecoilText(moveName, t.weighted_damage_min || 0, t.weighted_damage_max || 0);
-      const freqPart = spreadFreq ? `, most common spread, ${spreadFreq} of ${targetName}` : '';
       const buildLabel = t.attacker_build ? `${t.attacker_build}: ` : '';
-      return `${t.this_spread_ko}s ${targetName} with ${moveName}${range ? ` (${buildLabel}${range}${recoilPart} vs ${defDescription}${freqPart})` : ''}`;
+      return `${t.this_spread_ko}s ${targetName} with ${moveName}${range ? ` (${buildLabel}${range}${recoilPart} vs ${defDescription}${offFreqNote})` : ''}`;
     }
     const vsTarget = t.threat.split(' vs. ')[1];
     return vsTarget ? `${t.this_spread_ko} vs ${vsTarget}` : `${t.this_spread_ko} — ${t.threat}`;
