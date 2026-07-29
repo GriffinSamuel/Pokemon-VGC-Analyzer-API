@@ -225,6 +225,18 @@ async function getTopDamageAffectingItem(normalizedNameLower) {
   return damaging[0] || null;
 }
 
+// Spread prevalence: % of a species' ev_observations matching this exact (sp, nature)
+// combo. Used to show how common a specific build is.
+// Returns a decimal (0-1), or null if no data.
+async function getSpreadPrevalence(normalizedNameLower, sp, nature) {
+  const { total, spreads } = await getCommonSpreads(normalizedNameLower);
+  if (total === 0) return null;
+  const spKey = JSON.stringify(sp);
+  const match = spreads.find((s) => JSON.stringify(s.sp) === spKey && (s.nature || '').toLowerCase() === (nature || '').toLowerCase());
+  if (!match) return null;
+  return round(match.observations / total, 4);
+}
+
 module.exports = {
   getSpeciesRow,
   getObservationCount,
@@ -234,5 +246,6 @@ module.exports = {
   getMostCommonSpread,
   getCommonItems,
   getTopDamageAffectingItem,
+  getSpreadPrevalence,
   DAMAGE_AFFECTING_ITEMS,
 };

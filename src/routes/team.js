@@ -901,7 +901,7 @@ function buildTeamBuildText(responseBody, team) {
   if (ta.coverage.coverage_gaps.length > 0) {
     lines.push('Coverage gaps:');
     for (const gap of ta.coverage.coverage_gaps) {
-      lines.push(`  - ${gap.note} (meta prevalence ${(gap.meta_prevalence * 100).toFixed(1)}%)`);
+      lines.push(`  - ${gap.note}`);
     }
   }
   if (ta.synergies.length > 0) {
@@ -930,7 +930,10 @@ function buildTeamBuildText(responseBody, team) {
     lines.push('No critical (3+ members) type weaknesses.');
   } else {
     for (const w of responseBody.weaknesses.critical) {
-      lines.push(`${w.type}: ${w.team_members_weak.join(', ')} weak (meta prevalence ${(w.meta_prevalence * 100).toFixed(1)}%)`);
+      const prevNotes = w.member_prevalence
+        ? Object.entries(w.member_prevalence).filter(([, v]) => v != null).map(([name, prev]) => `${name} in ${(prev * 100).toFixed(1)}% of teams`).join(', ')
+        : '';
+      lines.push(`${w.type}: ${w.team_members_weak.join(', ')} weak${prevNotes ? ` (${prevNotes})` : ''}`);
       if (w.exploited_by.length > 0) {
         lines.push(`  Exploited by: ${w.exploited_by.map((e) => `${e.pokemon} (${(e.usage * 100).toFixed(1)}%)`).join(', ')}`);
       }

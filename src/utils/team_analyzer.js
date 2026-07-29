@@ -89,6 +89,13 @@ async function getTypeMetaData() {
     byType[type].sort((a, b) => b.usage - a.usage);
   }
 
+  // species_prevalence: per-Pokemon share of tournament teams (usage_percent directly
+  // from usage_stats, which is already usage_count / total_teams × 100 — no clamp needed).
+  const species_prevalence = {};
+  for (const row of rows) {
+    species_prevalence[row.name.toLowerCase()] = parseFloat(row.usage_percent) / 100;
+  }
+
   // prevalence: share of tournament teams containing at least one Pokemon of type X.
   // Each team counted once per type (no double-counting of dual-typed Pokemon).
   const prevalence = {};
@@ -128,7 +135,7 @@ async function getTypeMetaData() {
     }
   }
 
-  return { prevalence, byType };
+  return { prevalence, byType, species_prevalence };
 }
 
 // --- COVERAGE ANALYSIS ------------------------------------------------------------
@@ -165,10 +172,16 @@ function analyzeCoverage(team, typeMetaData, teamWeatherSet) {
   const coverageGaps = ALL_TYPES
     .filter((type) => !covered.has(type))
     .map((type) => {
-      const prevalence = round(typeMetaData.prevalence[type] || 0, 4);
-      const examples = (typeMetaData.byType[type] || []).slice(0, 2).map((p) => p.name);
-      let note = examples.length > 0
-        ? `No super effective moves against ${type} — ${examples.join(' and ')} ${examples.length > 1 ? 'are' : 'is a'} common threat${examples.length > 1 ? 's' : ''}`
+      const byTypeSpecies = (typeMetaData.byType[type] || []).slice(0, 3);
+      const speciesWithPrev = byTypeSpecies.map((p) => ({
+        name: p.name,
+        prevalence: typeMetaData.species_prevalence?.[p.name.toLowerCase()] || 0,
+      }));
+      const prevalence = speciesWithPrev.length > 0 ? Math.max(...speciesWithPrev.map(e => e.prevalence)) : 0;
+      const prevalenceNote = speciesWithPrev.filter(e => e.prevalence > 0).map(e => `${e.name} ${(e.prevalence * 100).toFixed(1)}%`).join(', ');
+      const exampleNames = byTypeSpecies.map((p) => p.name);
+      let note = exampleNames.length > 0
+        ? `No super effective moves against ${type} — ${exampleNames.join(' and ')} ${exampleNames.length > 1 ? 'are' : 'is a'} common threat${exampleNames.length > 1 ? 's' : ''}${prevalenceNote ? ` (${prevalenceNote})` : ''}`
         : `No super effective moves against ${type}`;
 
       // FIX 9: 4x weakness exposure — check if any meta Pokemon has a 4x
@@ -456,10 +469,18 @@ function analyzeWeaknesses(team, typeMetaData) {
         usage: p.usage,
         note: `Common ${type}-type attacker (#${(typeMetaData.byType[type] || []).findIndex((x) => x.name === p.name) + 1} in this typing's usage) threatens ${mons.join(', ')}`,
       }));
+      // Per-species prevalence for each weak team member: look up how common
+      // that Pokemon is in the meta, rather than showing type-level prevalence.
+      const memberPrevalence = {};
+      for (const monName of mons) {
+        const key = monName.toLowerCase();
+        memberPrevalence[monName] = typeMetaData.species_prevalence?.[key];
+      }
       return {
         type,
         team_members_weak: mons,
         meta_prevalence: round(typeMetaData.prevalence[type] || 0, 4),
+        member_prevalence: memberPrevalence,
         exploited_by: exploiters,
         mitigation: mitigationFor(type),
       };
