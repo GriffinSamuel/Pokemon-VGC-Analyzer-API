@@ -35,13 +35,15 @@ Categories: `OFFENSIVE`, `DEFENSIVE`, `WEATHER`, `SECONDARY`. Each preceded by a
 
 ## Why Block Assembly
 
-The Why block is one line per non-zero SP stat, showing the highest-contribution threshold that stat's investment addresses. Assembly logic in `team.js:buildSpAllocationWhy()`:
+The Why block is one line per non-zero SP stat, showing the binding-constraint threshold (largest KO-tier improvement from baseline) that stat's investment addresses:
 
-1. For each stat with SP > 0, find the highest-contribution threshold in `thresholds_met` tagged to that stat
-2. If a threshold exists → `survives {threat} ({attacker_build}: {damage_min}-{damage_max}%{recoil})`
+1. For each stat with SP > 0, find the "binding" threshold from `thresholds_met` tagged to that stat — selected by most KO tiers improved (baseline → current), with damage as tiebreaker (the hardest-hit survivor; falls back to contribution when no damage figure exists, e.g. speed thresholds). Direction is category-aware: defensive improvements are positive tier deltas (OHKO→2HKO = +1), offensive improvements are negative (2HKO→OHKO = −1), so the largest *improvement* means max delta for defensive, min delta for offensive.
+2. If a threshold exists → `survives {threat} ({attacker_build}: {damage_min}-{damage_max}%{recoil}{freq})`
 3. If no threshold but it's the primary offensive stat → `maximized for offensive role`
 4. If no threshold and not primary offensive → `unspendable SP: {n} (no threshold cleared)`
 5. Final line: `SP: {justified} justified + {unspendable} unspendable = 66 total`
+
+The `{freq}` suffix = `, {N}% of {Species}` showing the share of that species running this exact spread+nature. Present on every damage figure (primary, secondary, offensive). Offensive thresholds' frequency shows the target species' share.
 
 **Verified at:** `team.js:754-798`.
 
@@ -56,8 +58,9 @@ When a defensive threshold has secondary interactions (other threats near the sa
      [also: Garchomp Earthquake (72-85%, Adamant 32 Atk Choice Band Garchomp) | Landorus-T Earthquake (65-77%, Jolly 32 Atk Choice Band Landorus-T)]
 ```
 
-Format: `[also: {attacker} {move} ({range}{, {build}}{recoil}) | ...]`
+Format: `[also: {attacker} {move} ({range}{, {build}}{recoil}{freq}) | ...]`
 
+The `{freq}` = `, {N}% of {Species}` — same frequency note as primary entries.
 Sorted by max damage descending, top 4.
 
 **Verified at:** `team.js:697-720`.

@@ -207,13 +207,3 @@ Detailed conventions, intent, and invariants live in `docs/conventions/`. Consul
 | `CONVENTIONS_damage_calc.md` | CalcDamage usage, weather/ability/item order, Weather Ball, recoil, aggression multiplier, TYPE_VALUES |
 | `CONVENTIONS_format_output.md` | Threshold format, Why block, secondary interactions, build labels, Mega naming, section ordering |
 | `CONVENTIONS_inconsistencies.md` | 11 inconsistencies (1 P0, 4 P1, 6 P2) — species resolution, weather vocab, nature modifiers, role duality |
-
-## graphify
-
-This project has a knowledge graph at graphify-out/ with god nodes, community structure, and cross-file relationships.
-
-Rules:
-- For codebase questions, first run `graphify query "<question>"` when graphify-out/graph.json exists. Use `graphify path "<A>" "<B>"` for relationships and `graphify explain "<concept>"` for focused concepts. These return a scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep output.
-- If graphify-out/wiki/index.md exists, use it for broad navigation instead of raw source browsing.
-- Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context.
-- After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).

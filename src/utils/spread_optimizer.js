@@ -52,6 +52,30 @@ const POST_VALIDATION_HOOK = (sp) => {
   }
 };
 
+// Fills under-budget spreads to exactly 66. Adds missing SP to the least
+// important stat first (reverse of minimizeSpread's decreasePriority) so the
+// minimizer can immediately identify it as unspendable.
+function ensureBudget(sp) {
+  let total = 0;
+  for (const s of STAT_ORDER) total += sp[s] || 0;
+  if (total >= SP_BUDGET_TOTAL) return { ...sp };
+  if (total < SP_BUDGET_TOTAL) console.log('ensureBudget FILLING: total=' + total + ' sp=' + JSON.stringify(sp));
+  let missing = SP_BUDGET_TOTAL - total;
+  const result = { ...sp };
+  const fillOrder = [...STAT_ORDER].reverse();
+  for (const s of fillOrder) {
+    if (missing <= 0) break;
+    const cur = result[s] || 0;
+    const room = SP_CAP_PER_STAT - cur;
+    if (room > 0) {
+      const add = Math.min(room, missing);
+      result[s] = cur + add;
+      missing -= add;
+    }
+  }
+  return result;
+}
+
 const POP_INIT = 200;
 const GENERATIONS = 40;
 // FIX 3: team-build requests search deeper than individual /api/recommend/evs
@@ -550,6 +574,14 @@ async function findOptimalSpread(pokemon, nature, role, threatMatrix, metaContex
     }
   }
 
+  // Ensure every top candidate sums to exactly 66 before detailed scoring
+  for (const c of top) {
+    const before = STAT_ORDER.reduce((s, k) => s + (c.sp[k] || 0), 0);
+    c.sp = ensureBudget(c.sp);
+    const after = STAT_ORDER.reduce((s, k) => s + (c.sp[k] || 0), 0);
+    if (before !== after) console.log('ensureBudget modified: ' + before + ' -> ' + after + ' sp=' + JSON.stringify(c.sp));
+  }
+
   // Detailed re-score (thresholds_met/thresholds_missed) only for the final top 5
   // — building that breakdown for every candidate evaluated during the search
   // would be wasted work (see scoreSpread's `options.detailed`).
@@ -557,10 +589,12 @@ async function findOptimalSpread(pokemon, nature, role, threatMatrix, metaContex
   for (let i = 0; i < top.length; i++) {
     const c = top[i];
     const detail = await scoreSpread(pokemon, c.sp, nature, role, threatMatrix, metaContext, Object.assign({}, { detailed: true, item }, fieldOpts ? { fieldOpts } : {}));
+    const spreadTotal = sumArr(spreadToArray(c.sp));
+    if (spreadTotal !== SP_BUDGET_TOTAL) console.log('DETAILED SCORING: spread total = ' + spreadTotal + ' for ' + JSON.stringify(c.sp));
     spreads.push({
       rank: i + 1,
       sp: c.sp,
-      total_sp: sumArr(spreadToArray(c.sp)),
+      total_sp: spreadTotal,
       final_stats: detail.final_stats,
       score: c.score,
       thresholds_met: detail.thresholds_met,
@@ -568,26 +602,28 @@ async function findOptimalSpread(pokemon, nature, role, threatMatrix, metaContex
     });
   }
 
-  // SP MINIMIZATION: strips unattributed SP (STEP 1), then downward-minimizes
-  // each stat (STEP 2) — decreases SP by 1 if score unchanged. See
-  // minimizeSpread in spread_scorer.js.
+  // SP MINIMIZATION: the displayed spread IS the minimized (load-bearing)
+  // floor — "budget is a ceiling, not a target" (CLAUDE.md), so a stat with
+  // no threshold requiring it is left at 0 rather than padded to fill 66.
+  // `minimization` records what was trimmed for transparency in the Why block.
   if (spreads.length > 0 && teamBuild) {
     const topSpread = spreads[0];
     try {
       const minimResult = await minimizeSpread(pokemon, topSpread.sp, nature, role, threatMatrix, metaContext, item, fieldOpts);
-      topSpread.sp = clampSpread(minimResult.minimized_sp);
-      POST_VALIDATION_HOOK(topSpread.sp);
-      topSpread.total_sp = sumArr(spreadToArray(topSpread.sp));
+      const justifiedTotal = Math.max(0, SP_BUDGET_TOTAL - (minimResult.unspendable || 0));
+      topSpread.sp = minimResult.minimized_sp;
+      topSpread.total_sp = justifiedTotal;
       topSpread.final_stats = minimResult.final_stats;
       topSpread.thresholds_met = minimResult.thresholds_met;
       topSpread.minimization = {
         reductions: minimResult.reductions,
         unspendable: minimResult.unspendable || 0,
+        justified_sp: minimResult.minimized_sp,
+        justified_total: justifiedTotal,
       };
     } catch (err) {
-      // Minimization failure — log, clamp the spread, and continue
+      // Minimization failure — log and continue with the original spread
       console.error('Minimization failed for ' + (pokemon?.name || pokemon) + ': ' + err.message);
-      topSpread.sp = clampSpread(topSpread.sp);
       POST_VALIDATION_HOOK(topSpread.sp);
     }
   }

@@ -10,9 +10,11 @@ const {
   getScoredCandidateItems, resolveItemConflicts, buildItemSpNotes,
   getRealAbilityFrequency, detectTeamWeatherContext, resolveRealAbility,
   isConditionalSpeedAbility, conditionalSpeedAbilityWeather,
+  WEATHER_SETTER_ABILITIES,
 } = require('../utils/item_optimizer');
 const { getOrComputeEvolutionarySpread } = require('../utils/ev_optimizer');
 const { getNerdOfNowSets } = require('../utils/nerd_of_now');
+const { getMoveData } = require('../utils/nerd_of_now_calc');
 const { round } = require('../utils/format');
 const { STAT_ORDER } = require('../utils/stat_formula');
 const {
@@ -694,8 +696,30 @@ function buildFrequencyNote(threshold) {
   const speciesName = vsMatch ? vsMatch[1] : extractAttackerName(threshold);
   return speciesName ? `, ${freqPct}% of ${speciesName}` : '';
 }
+// Speed thresholds are only as reliable as how often the target actually runs
+// the exact Speed value the threshold assumes — a target's MOST common Speed
+// tier (topTier in scoreSpread) can still be a minority of its real spreads.
+// rawFreq comes straight from ev_observations via getCommonSpeedTiers, the same
+// source damage thresholds already use for their {freq} suffix.
+function describeSpeedThresholdForWhy(t) {
+  const spread = t.attacker_spreads_used?.[0];
+  const nature = spread?.nature || '';
+  const rawFreq = typeof spread?.raw_frequency === 'number' ? spread.raw_frequency : null;
+  const attackerName = t.attacker || extractAttackerName(t);
+  const investLabel = t.speed_sp === 0 ? 'uninvested Speed' : (typeof t.speed_sp === 'number' ? `${t.speed_sp} SP Speed` : '');
+  const statPart = [nature, t.speed_stat].filter((p) => p !== null && p !== undefined && p !== '').join(' ');
+  const detailParts = [statPart, investLabel].filter(Boolean);
+  let freqPart = '';
+  if (rawFreq !== null) {
+    const pct = Math.round(rawFreq * 100);
+    freqPart = ` — ${pct}% of ${attackerName}`;
+    if (pct < 50) freqPart += ' (minority — most observed spreads run a different Speed)';
+  }
+  const linkSuffix = t.speed_ohko_link ? ' — speed_ohko_link 3x (also OHKOs at baseline)' : '';
+  return `outspeeds ${attackerName} (${detailParts.join(', ')}${freqPart})${linkSuffix}`;
+}
 function describeThresholdForWhy(t, allDefensiveThresholds, statKey) {
-  if (t.category === 'speed') return t.threat.replace(/^Outspeed /, 'outspeeds ');
+  if (t.category === 'speed') return describeSpeedThresholdForWhy(t);
   if (t.category === 'defensive') {
     const recoilText = buildRecoilText(extractMoveName(t), t.weighted_damage_min || 0, t.weighted_damage_max || 0);
     const freqNote = buildFrequencyNote(t);
@@ -747,15 +771,33 @@ function describeThresholdForWhy(t, allDefensiveThresholds, statKey) {
       const spreadInfo = t.attacker_spreads_used?.[0];
       const offFreqNote = buildFrequencyNote(t);
       // FIX 8: Special moves must show defender's SpD, Physical moves must show Def
-      // attacker_build format: "Nature SpVal Atk/SpA Item" — check the offensive stat label
-      const isSpecialAttacker = t.attacker_build && (t.attacker_build.includes('SpA'));
-      const defStatKey = isSpecialAttacker ? 'spd' : 'def';
-      const defStatLabel = isSpecialAttacker ? 'SpD' : 'Def';
+      // FIX: use getMoveData() to determine the move's actual category rather than
+      // checking t.attacker_build (which is only set on defensive thresholds).
+      const moveData = getMoveData(moveName);
+      const isSpecialMove = moveData && moveData.category === 'Special';
+      const defStatKey = isSpecialMove ? 'spd' : 'def';
+      const defStatLabel = isSpecialMove ? 'SpD' : 'Def';
       const defDescription = spreadInfo ? `${spreadInfo.sp.hp || 0}HP/${spreadInfo.sp[defStatKey] || 0}${defStatLabel}` : '';
       const range = typeof t.weighted_damage_min === 'number' ? `${t.weighted_damage_min}-${t.weighted_damage_max}%` : '';
       const recoilPart = buildRecoilText(moveName, t.weighted_damage_min || 0, t.weighted_damage_max || 0);
       const buildLabel = t.attacker_build ? `${t.attacker_build}: ` : '';
-      return `${t.this_spread_ko}s ${targetName} with ${moveName}${range ? ` (${buildLabel}${range}${recoilPart} vs ${defDescription}${offFreqNote})` : ''}`;
+      // Weather annotation: when the threshold was computed under a specific
+      // weather (and the team has multiple weathers), annotate the primary
+      // result and surface alternative-weather outcomes.
+      let result = `${t.this_spread_ko}s ${targetName} with ${moveName}`;
+      const hasWeatherContext = t.alt_weathers && t.alt_weathers.length > 0;
+      const primaryWeatherLabel = t.primary_weather && hasWeatherContext ? ` (${t.primary_weather})` : '';
+      result += primaryWeatherLabel;
+      if (range) {
+        result += ` (${buildLabel}${range}${recoilPart} vs ${defDescription}${offFreqNote})`;
+      }
+      if (hasWeatherContext) {
+        const altParts = t.alt_weathers
+          .filter(a => a.this_spread_ko && a.weighted_damage_min)
+          .map(a => `also in ${a.weather}: ${a.this_spread_ko}s (${a.weighted_damage_min}-${a.weighted_damage_max}% vs ${defDescription})`);
+        if (altParts.length > 0) result += `; ${altParts.join('; ')}`;
+      }
+      return result;
     }
     const vsTarget = t.threat.split(' vs. ')[1];
     return vsTarget ? `${t.this_spread_ko} vs ${vsTarget}` : `${t.this_spread_ko} — ${t.threat}`;
@@ -791,7 +833,24 @@ function buildSpAllocationWhy(member) {
     } else {
       const curDelta = koTierDelta(t);
       const bestDelta = koTierDelta(bestByStat[t.stat]);
-      if (curDelta > bestDelta || (curDelta === bestDelta && t.contribution > bestByStat[t.stat].contribution)) {
+      // Offensive improvements are NEGATIVE deltas (tier index drops toward OHKO,
+      // e.g. 2HKO→OHKO = −1); defensive improvements are POSITIVE deltas (baseline
+      // is always OHKO after the marginal-value guard, so OHKO→2HKO = +1). A single
+      // comparison sign can't serve both — the binding constraint for a defensive
+      // stat is the LARGEST tier gain (max delta), for an offensive stat the LARGEST
+      // tier gain is the most-negative delta (min delta).
+      const isDefensive = t.category === 'defensive';
+      const betterByDelta = isDefensive ? curDelta > bestDelta : curDelta < bestDelta;
+      // Equal deltas are common (several OHKO→2HKO survivals land in the same
+      // tier), so the tiebreak picks the threshold where the SP does the most
+      // work: the one dealing the most damage (the biggest residual threat you
+      // survive), falling back to contribution when damage is unavailable (e.g.
+      // speed thresholds carry no damage figure).
+      const curDamage = t.weighted_damage_max || 0;
+      const bestDamage = bestByStat[t.stat].weighted_damage_max || 0;
+      const betterByDamage = curDamage > bestDamage
+        || (curDamage === bestDamage && t.contribution > bestByStat[t.stat].contribution);
+      if (betterByDelta || (curDelta === bestDelta && betterByDamage)) {
         bestByStat[t.stat] = t;
       }
     }
@@ -801,6 +860,7 @@ function buildSpAllocationWhy(member) {
   const lines = [];
   let justifiedSp = 0;
   let unspendableSp = 0;
+  const justification = member.minimization?.justified_sp;
 
   for (const statKey of STAT_ORDER) {
     const spVal = member.sp[statKey] || 0;
@@ -808,27 +868,46 @@ function buildSpAllocationWhy(member) {
     const label = `${spVal} ${SHOWDOWN_STAT_LABELS[statKey]}`;
     const best = bestByStat[statKey];
 
-    // PROBLEM 2 FIX: justification text is NEVER overwritten by redistribution.
-    // Every stat with SP shows its justifying threshold + [also:.] secondaries.
-    if (best) {
-      justifiedSp += spVal;
-      lines.push(`${label} — ${describeThresholdForWhy(best, allDefensiveThresholds, statKey)}`);
-    } else if (statKey === primaryOffenseStat) {
-      justifiedSp += spVal;
-      lines.push(`${label} — maximized for offensive role`);
+    if (justification) {
+      // Per-stat split: floor value from minimization = load-bearing portion
+      const floorVal = justification[statKey] || 0;
+      const waste = spVal - floorVal; // unspendable portion of this stat
+
+      if (best && floorVal > 0) {
+        justifiedSp += floorVal;
+        unspendableSp += waste;
+        const desc = describeThresholdForWhy(best, allDefensiveThresholds, statKey);
+        lines.push(waste > 0 ? `${label} — ${desc} (${waste} unspendable)` : `${label} — ${desc}`);
+      } else if (statKey === primaryOffenseStat && floorVal > 0) {
+        justifiedSp += floorVal;
+        unspendableSp += waste;
+        lines.push(waste > 0 ? `${label} — maximized for offensive role (${waste} unspendable)` : `${label} — maximized for offensive role`);
+      } else {
+        unspendableSp += spVal;
+        lines.push(`${label} — unspendable SP: ${spVal} (no threshold cleared)`);
+      }
     } else {
-      // PROBLEM 4: SP in stats with no threshold IS unspendable, even if the
-      // optimizer physically placed it there via dump-stat allocation.
-      unspendableSp += spVal;
-      lines.push(`${label} — unspendable SP: ${spVal} (no threshold cleared)`);
+      // PROBLEM 2 FIX: justification text is NEVER overwritten by redistribution.
+      // Every stat with SP shows its justifying threshold + [also:.] secondaries.
+      if (best) {
+        justifiedSp += spVal;
+        lines.push(`${label} — ${describeThresholdForWhy(best, allDefensiveThresholds, statKey)}`);
+      } else if (statKey === primaryOffenseStat) {
+        justifiedSp += spVal;
+        lines.push(`${label} — maximized for offensive role`);
+      } else {
+        // PROBLEM 4: SP in stats with no threshold IS unspendable, even if the
+        // optimizer physically placed it there via dump-stat allocation.
+        unspendableSp += spVal;
+        lines.push(`${label} — unspendable SP: ${spVal} (no threshold cleared)`);
+      }
     }
   }
 
   // Every SP must be accounted for: justified by threshold + unspendable (no
-  // threshold or budget remainder). Sum must equal exactly 66.
-  const SP_BUDGET = 66;
-  const unspendableTotal = SP_BUDGET - justifiedSp;
-  lines.push(`  SP: ${justifiedSp} justified + ${unspendableTotal} unspendable = ${SP_BUDGET} total`);
+  // threshold or budget remainder). Sum always equals the displayed total.
+  const totalFromLoop = justifiedSp + unspendableSp;
+  lines.push(`  SP: ${justifiedSp} justified + ${unspendableSp} unspendable = ${totalFromLoop} total`);
   return lines;
 }
 
@@ -851,14 +930,6 @@ function buildTeamBuildText(responseBody, team) {
     if (why.length > 0) {
       lines.push(`Why: ${why[0]}`);
       for (const w of why.slice(1)) lines.push(`     ${w}`);
-    }
-    if (member.minimization) {
-      const mini = member.minimization;
-      if (mini.reductions && Object.keys(mini.reductions).length > 0) {
-        const redStrs = Object.entries(mini.reductions).map(([s, r]) => `${r.saved} ${SHOWDOWN_STAT_LABELS[s]} (${r.from}→${r.to})`);
-        lines.push(`  SP minimized: removed ${redStrs.join(', ')}`);
-      }
-
     }
     for (const mv of member.moves) {
       const ctx = mv.team_context ? ` — ${mv.team_context}` : '';
@@ -1137,15 +1208,29 @@ router.post('/build', async (req, res, next) => {
     const itemAssignments = resolveItemConflicts(teamCandidates);
     const itemByPokemon = Object.fromEntries(itemAssignments.map((a) => [a.pokemon, a]));
 
-    // STEP 5: item-aware evolutionary EV optimization, all 6 Pokemon in parallel
-    // (see ev_optimizer.js's getOrComputeEvolutionarySpread — awaits the real
-    // search on a cache miss instead of the plain /evs endpoint's fire-and-forget
-    // pattern, and shares that same 24hr cache). Ability is NOT threaded into
-    // this search — spread_scorer.js/spread_optimizer.js are out of scope for
-    // this task's fixes and already don't accept an ability parameter.
-    const fieldOpts = teamWeatherContext.size > 0 ? { weather: [...teamWeatherContext][0] } : null;
-    const evoResults = await Promise.all(teamNames.map((name) => {
+    // STEP 5: item-aware evolutionary EV optimization, all 6 Pokemon in parallel.
+    // Each Pokemon uses its OWN weather (based on its own weather-setting ability)
+    // rather than a single shared weather from [...teamWeatherContext][0], which
+    // picks arbitrarily and can give conflicting weather (e.g., Pelipper's Rain
+    // used for Charizard-Mega-Y's Solar Beam calcs). _teamContext (all team
+    // weathers) is passed alongside so scoreSpread's detailed pass can compute
+    // alternative-weather damage for the Why-block display.
+    const teamWeathersForContext = [...teamWeatherContext];
+    const evoResults = await Promise.all(teamNames.map((name, i) => {
       const item = itemByPokemon[name].item;
+      const ability = finalAbilities[i];
+      const abilityWeather = WEATHER_SETTER_ABILITIES[(ability || '').toLowerCase()];
+      // Non-setters inherit team weather so weather-dependent calcs reflect real
+      // team conditions. Priority: (1) own weather-setting ability, (2) the weather
+      // a weather-requiring ability thrives in when the team has it (e.g. Venusaur
+      // Chlorophyll inherits Sun, not the team's first-listed Rain), (3) the team's
+      // first active weather. _teamContext still carries every team weather so the
+      // detailed pass surfaces each alternative separately.
+      const requiredWeather = conditionalSpeedAbilityWeather(ability);
+      const requiredInTeam = requiredWeather && teamWeatherContext.has(requiredWeather);
+      const inheritedWeather = abilityWeather
+        || (requiredInTeam ? requiredWeather : (teamWeathersForContext.length > 0 ? teamWeathersForContext[0] : null));
+      const fieldOpts = { weather: inheritedWeather || null, _teamContext: teamWeathersForContext };
       return getOrComputeEvolutionarySpread(name, { item, teamBuild: true, fieldOpts });
     }));
 

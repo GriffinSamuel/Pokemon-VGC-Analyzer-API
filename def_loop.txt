@@ -1,0 +1,64 @@
+ 700|      const isFocusSash = itemLower === 'focus sash';
+ 701|      const sashPenalty = (isFocusSash && multKey === 'ohko_prevented') ? 0.1 : 1;
+ 702|      // Assault Vest already multiplies the real SpD stat 1.5x inside the damage
+ 703|      // calc above (buildPokemon() gets `item`) — this is an ADDITIONAL search-time
+ 704|      // weighting on top of that real effect, so the GA actively favors SpD
+ 705|      // thresholds once AV is the assigned item, not just passively benefits from
+ 706|      // the stat boost already baked into the KO-tier math.
+ 707|      const itemMult = (itemLower === 'assault vest' && statKey === 'spd') ? ASSAULT_VEST_SPD_CONTRIBUTION_MULTIPLIER : 1.0;
+ 708|      const contribution = round(effectiveWeight * TYPE_VALUES[multKey] * (roleMult[multKey] ?? 1.0) * factor * itemMult * sashPenalty, 6);
+ 709|      score += contribution;
+ 710|      if (detailed) {
+ 711|        // FIX 2: did this specific threshold actually need the HP SP invested,
+ 712|        // or would the candidate's Def/SpD alone (with HP at 0) have cleared it
+ 713|        // just the same? Only tag 'hp' when removing it genuinely regresses the
+ 714|        // KO tier — i.e. HP was load-bearing for THIS threshold specifically,
+ 715|        // not just "HP happens to be nonzero somewhere on this spread."
+ 716|        let attributedStat = statKey;
+ 717|        // FIX 3: verify attribution by checking if zeroing each candidate stat
+ 718|        // changes the KO tier. Try the secondary stat candidate first (if HP was
+ 719|        // already zeroed and didn't change the tier), then the primary.
+ 720|        if (hpZeroedStats) {
+ 721|          const hpZeroedResult = await weightedDefensiveDamage({
+ 722|            attackerRow, move: threat.move, attackerSpreads, attackerItem, defenderRow: pokemon,
+ 723|            defenderFinalStats: hpZeroedStats, defenderSp: hpZeroedSp, defenderNature: nature, defenderItem: item, threatPrimaryNature: threat.primary_nature, fieldOpts,
+ 724|          });
+ 725|          const hpZeroedKo = koFromPercent(hpZeroedResult.koCheckValue);
+ 726|          if (hpZeroedKo !== koResult) attributedStat = 'hp';
+ 727|        }
+ 728|
+ 729|        // REGRESSION C: before pushing to met, verify this threshold is actually
+ 730|        // load-bearing — the Pokemon must NOT already survive with 0 SP in the
+ 731|        // attributed stat (all other stats at candidate values). If the Pokemon
+ 732|        // survives the attack even without investment in this stat, the threshold
+ 733|        // is invalid and must not appear in output or justify any SP.
+ 734|        const verifySpZeroed = { hp: 0, atk: 0, def: 0, spa: 0, spd: 0, spe: 0, ...sp };
+ 735|        verifySpZeroed[attributedStat] = 0;
+ 736|        const verifyStats = {};
+ 737|        for (const s of ['hp', 'atk', 'def', 'spa', 'spd', 'spe']) {
+ 738|          const alignment = s === 'hp' ? 1.0 : natureMultiplierFor(nature, s);
+ 739|          verifyStats[s] = calcStat(pokemon[s], verifySpZeroed[s], alignment, s === 'hp');
+ 740|        }
+ 741|        const verifyResult = await weightedDefensiveDamage({
+ 742|          attackerRow, move: threat.move, attackerSpreads, attackerItem, defenderRow: pokemon,
+ 743|          defenderFinalStats: verifyStats, defenderSp: verifySpZeroed, defenderNature: nature, defenderItem: item, threatPrimaryNature: threat.primary_nature, fieldOpts,
+ 744|        });
+ 745|        // If the Pokemon already survives at 0 SP in the attributed stat, this
+ 746|        // threshold is not a real reason to invest — skip it entirely
+ 747|        if (verifyResult.koCheckValue < 100) continue;
+ 748|
+ 749|        met.push({
+ 750|          category: 'defensive',
+ 751|          stat: attributedStat,
+ 752|          threat: `${threat.attacker} ${threat.move}`,
+ 753|          attacker_build: buildAttackerBuildLabel(attackerSpreads, attackerItem, moveRow.category, moveRow.type, attackerAbility),
+ 754|          baseline_ko: baselineKo,
+ 755|          this_spread_ko: koResult,
+ 756|          attacker_spreads_used: current.perSpread,
+ 757|          weighted_damage_min: current.weightedMin,
+ 758|          weighted_damage_max: current.weightedMax,
+ 759|          aggression_multiplier: aggressionMultiplier,
+ 760|          contribution,
+ 761|        });
+ 762|      }
+ 763|    } else if (detailed) {

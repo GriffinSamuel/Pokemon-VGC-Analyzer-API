@@ -4,7 +4,7 @@ const pool = require('../db/pool');
 const { calcStat, natureMultiplierFor, SP_CAP_PER_STAT, SP_BUDGET_TOTAL, STAT_ORDER } = require('./stat_formula');
 const { getCommonSpreads, getCommonSpeedTiers, getSpeciesRow, getTopDamageAffectingItem } = require('./ev_observations');
 const { getSpeedModifiers, trickroomRelevant } = require('./speed_context');
-const { itemBreakpointBonus, OFFENSIVE_ROLES } = require('./item_optimizer');
+const { itemBreakpointBonus, OFFENSIVE_ROLES, WEATHER_SETTER_ABILITIES, CONDITION_REQUIRING_ABILITIES } = require('./item_optimizer');
 const { classifyRole } = require('./role_classifier');
 const { CalcDamage, getMoveData } = require('./nerd_of_now_calc');
 const { effectivenessAgainst } = require('./typeChart');
@@ -449,9 +449,10 @@ async function weightedOffensiveDamage({ attackerRow, attackerSp, attackerNature
 
   for (const spread of targetSpreads) {
     const targetNature = spread.nature || 'Hardy';
+    const weatherKey = fieldOpts?.weather || '';
     const cacheKey = [
       'off', attackerRow.name.toLowerCase(), move.toLowerCase(), targetRow.name.toLowerCase(), JSON.stringify(spread.sp), targetNature,
-      attackerSp.atk, attackerSp.spa, attackerNature || '', attackerItem || '',
+      attackerSp.atk, attackerSp.spa, attackerNature || '', attackerItem || '', weatherKey,
     ].join('~');
 
     let calcResult = damageCalcCache.get(cacheKey);
@@ -602,6 +603,8 @@ async function scoreSpread(pokemon, sp, nature, role, threatMatrix, metaContext,
   const item = options.item || null;
   const itemLower = (item || '').toLowerCase();
   const fieldOpts = options.fieldOpts || null;
+  const teamWeathers = (fieldOpts && fieldOpts._teamContext) || [];
+  const primaryWeather = fieldOpts?.weather || null;
   const roleMult = getRoleMultipliers(role);
   const finalStats = computeFinalStats(pokemon, sp, nature);
   const baselineStats = computeFinalStats(pokemon, ZERO_SP, nature);
@@ -788,6 +791,7 @@ async function scoreSpread(pokemon, sp, nature, role, threatMatrix, metaContext,
       let bestBaseline = null;
       let bestMove = null;
       let bestStatKey = null;
+      let bestAttackerSpFull = null;
       for (const moveEntry of ownMoves) {
         const moveRow = await getMoveRow(moveEntry.move.toLowerCase());
         if (!moveRow || moveRow.category === 'Status' || !moveRow.power) continue;
@@ -808,6 +812,7 @@ async function scoreSpread(pokemon, sp, nature, role, threatMatrix, metaContext,
           bestBaseline = baseline;
           bestMove = moveEntry.move;
           bestStatKey = statKey;
+          bestAttackerSpFull = attackerSpFull;
         }
       }
       if (!bestCurrent) continue;
@@ -823,7 +828,7 @@ async function scoreSpread(pokemon, sp, nature, role, threatMatrix, metaContext,
         const contribution = round(targetUsage * TYPE_VALUES[multKey] * (roleMult[multKey] ?? 1.0) * factor, 6);
         score += contribution;
         if (detailed) {
-          met.push({
+          const metEntry = {
             category: 'offensive',
             stat: bestStatKey,
             threat: `${pokemon.name} ${bestMove} vs. ${target.pokemon_name}`,
@@ -833,7 +838,72 @@ async function scoreSpread(pokemon, sp, nature, role, threatMatrix, metaContext,
             weighted_damage_min: bestCurrent.weightedMin,
             weighted_damage_max: bestCurrent.weightedMax,
             contribution,
-          });
+          };
+          // Alternative weather display: if there are other team weathers that
+          // differ from the primary (e.g., Pelipper's Rain + Charizard's Sun),
+          // compute what this threshold would look like under each alternative.
+          // Only computed in the detailed pass (once per final candidate, not
+          // during GA search).
+          // Tag the threshold with the primary weather so the Why block can
+          // annotate it and also show alternative-weather outcomes.
+          metEntry.primary_weather = primaryWeather;
+          if (primaryWeather && teamWeathers.length > 1) {
+            const altWeathers = teamWeathers.filter(w => w !== primaryWeather);
+            if (altWeathers.length > 0) {
+              const altResults = [];
+              for (const altWeather of altWeathers) {
+                const altFieldOpts = { ...fieldOpts, weather: altWeather };
+                const altCurrent = await weightedOffensiveDamage({
+                  attackerRow: pokemon, attackerSp: bestAttackerSpFull, attackerNature: nature, attackerItem: item,
+                  move: bestMove, targetRow, targetSpreads, fieldOpts: altFieldOpts,
+                });
+                if (altCurrent.koCheckValue > 0) {
+                  altResults.push({
+                    weather: altWeather,
+                    weighted_damage_min: altCurrent.weightedMin,
+                    weighted_damage_max: altCurrent.weightedMax,
+                    this_spread_ko: koFromPercent(altCurrent.koCheckValue),
+                  });
+                }
+              }
+              if (altResults.length > 0) metEntry.alt_weathers = altResults;
+            }
+          }
+          // Opponent weather: if the TARGET Pokemon has a weather-setting
+          // ability (e.g., Tyranitar's Sand Stream, Torkoal's Drought) or a
+          // weather-requiring ability that ties it to a weather archetype
+          // (e.g., Excadrill's Sand Rush, Venusaur's Chlorophyll), show what
+          // this threshold looks like under that weather too.
+          const targetWeatherAbilities = [targetRow.ability1, targetRow.ability2, targetRow.ability_hidden]
+            .filter(Boolean)
+            .map(a => WEATHER_SETTER_ABILITIES[a.toLowerCase()] || CONDITION_REQUIRING_ABILITIES[a.toLowerCase()])
+            .filter(Boolean)
+            .filter(w => w !== primaryWeather);
+          const uniqueTargetWeathers = [...new Set(targetWeatherAbilities)];
+          if (uniqueTargetWeathers.length > 0) {
+            // Avoid duplicating weathers already in alt_weathers
+            const existingAltWeathers = new Set((metEntry.alt_weathers || []).map(a => a.weather));
+            for (const tgtWeather of uniqueTargetWeathers) {
+              if (existingAltWeathers.has(tgtWeather)) continue;
+              const tgtFieldOpts = { ...fieldOpts, weather: tgtWeather };
+              const tgtCurrent = await weightedOffensiveDamage({
+                attackerRow: pokemon, attackerSp: bestAttackerSpFull, attackerNature: nature, attackerItem: item,
+                move: bestMove, targetRow, targetSpreads, fieldOpts: tgtFieldOpts,
+              });
+              if (tgtCurrent.koCheckValue > 0) {
+                const tgtKo = koFromPercent(tgtCurrent.koCheckValue);
+                metEntry.alt_weathers = metEntry.alt_weathers || [];
+                metEntry.alt_weathers.push({
+                  weather: tgtWeather,
+                  weighted_damage_min: tgtCurrent.weightedMin,
+                  weighted_damage_max: tgtCurrent.weightedMax,
+                  this_spread_ko: tgtKo,
+                  source: 'opponent',
+                });
+              }
+            }
+          }
+          met.push(metEntry);
         }
       }
     }
@@ -913,7 +983,11 @@ async function scoreSpread(pokemon, sp, nature, role, threatMatrix, metaContext,
             stat: 'spe',
             threat: `Outspeed ${threat.attacker} (${topTier.nature || ''} ${topTier.speed_stat})${baselineOhkoes ? ' — speed_ohko_link 3x (also OHKOs at baseline)' : ''}`.trim(),
             baseline_ko: null, this_spread_ko: null,
-            attacker_spreads_used: [{ sp: null, nature: topTier.nature, frequency: topTier.frequency }],
+            attacker: threat.attacker,
+            speed_sp: topTier.spe_sp,
+            speed_stat: topTier.speed_stat,
+            speed_ohko_link: baselineOhkoes,
+            attacker_spreads_used: [{ sp: null, nature: topTier.nature, frequency: topTier.frequency, raw_frequency: topTier.frequency }],
             weighted_damage_min: null, weighted_damage_max: null,
             contribution,
           });
@@ -1031,11 +1105,56 @@ function getStatDecreasePriority(role, pokemonRow) {
   return priority;
 }
 
+// Identity for a thresholds_met entry that's stable across SP changes (the
+// attacker/move/target never move, only our own SP does) — used to match a
+// threshold across a before/after scoreSpread() call during minimization.
+function thresholdIdentity(t) {
+  return `${t.category}|${t.stat}|${t.threat}`;
+}
+
+// True iff decreasing SP from `before` to `after` didn't regress any threshold
+// that was previously satisfied. This is a DISCRETE-OUTCOME comparison, not a
+// raw-score comparison: KO-tier thresholds (defensive/offensive) must not move
+// backward a tier, and presence-only thresholds (speed/speed_tie — outspeeding
+// a benchmark, breaking a speed tie) must not disappear. Raw score alone is
+// the wrong equivalence check here — speed/Trick Room contributions are scaled
+// by a continuous margin ((speed - benchmark) / 50, clamped to 1), so a spread
+// can still clear every threshold it cleared before while its margin (and thus
+// raw score) strictly decreases. Comparing scores would reject that decrement
+// even though nothing about the spread's real performance changed, leaving
+// Speed (and any other margin-only stat) systematically under-minimized.
+function noThresholdRegressed(before, after) {
+  const afterByKey = new Map(after.met.map((t) => [thresholdIdentity(t), t]));
+  for (const b of before.met) {
+    const a = afterByKey.get(thresholdIdentity(b));
+    if (b.category === 'defensive' || b.category === 'offensive') {
+      if (!a) return false;
+      const bi = tierIndex(b.this_spread_ko);
+      const ai = tierIndex(a.this_spread_ko);
+      if (b.category === 'defensive' && ai < bi) return false; // moved toward OHKO
+      if (b.category === 'offensive' && ai > bi) return false; // moved away from OHKO
+    } else if (!a) {
+      return false; // speed/speed_tie: presence-only, must not disappear
+    }
+  }
+  // A death-trap penalty (missed.note startsWith 'speed_death_trap_penalty')
+  // appearing where it wasn't before is also a real regression — the spread
+  // stopped outspeeding (or lost its escape option against) an OHKO threat.
+  const beforeTraps = new Set(
+    before.missed.filter((m) => m.note?.startsWith('speed_death_trap_penalty')).map((m) => m.threat)
+  );
+  for (const m of after.missed) {
+    if (m.note?.startsWith('speed_death_trap_penalty') && !beforeTraps.has(m.threat)) return false;
+  }
+  return true;
+}
+
 // SP minimization: greedily decreases each stat by 1 SP, keeping the decrease
-// if the score (all interactions) is unchanged. Every point is verified via
-// scoreSpread() before removal — there is no bulk-strip step, so defensive SP
-// that is load-bearing for a threshold attributed to a different stat (e.g., Def
-// enabling an HP-tagged survival threshold) is never silently removed.
+// if no threshold's discrete outcome regresses (see noThresholdRegressed).
+// Every point is verified via scoreSpread() before removal — there is no bulk-
+// strip step, so defensive SP that is load-bearing for a threshold attributed
+// to a different stat (e.g., Def enabling an HP-tagged survival threshold) is
+// never silently removed.
 // Priority: HP → relevant defense → relevant offense → remaining → speed.
 // Repeats until no stat can be decreased further. Reports unspendable SP as the
 // remainder (66 − allocated). Hard 32 per-stat cap and total 66 SP cap enforced.
@@ -1049,12 +1168,12 @@ async function minimizeSpread(pokemon, sp, nature, role, threatMatrix, metaConte
   const reductions = {};
 
   // Downward minimization — try decreasing each stat by 1 SP.
-  // If the score (all interactions) is unchanged, keep the decrease.
+  // Keep the decrease iff no previously-satisfied threshold regresses.
   // Priority: HP → relevant defense → relevant offense → remaining → speed.
   // Repeat until no decreases are possible.
   const pokemonRow = { atk: pokemon.atk, spa: pokemon.spa };
   const decreasePriority = getStatDecreasePriority(role, pokemonRow);
-  let currentScore = baseline.score;
+  let currentState = { met: baseline.thresholds_met || [], missed: baseline.thresholds_missed || [] };
   let improved = true;
   while (improved) {
     improved = false;
@@ -1063,9 +1182,10 @@ async function minimizeSpread(pokemon, sp, nature, role, threatMatrix, metaConte
       const testSp = { ...minimizedSp, [stat]: minimizedSp[stat] - 1 };
       try {
         const testResult = await scoreSpread(pokemon, testSp, nature, role, threatMatrix, metaContext, opts);
-        if (testResult.score >= currentScore - 1e-9) {
+        const testState = { met: testResult.thresholds_met || [], missed: testResult.thresholds_missed || [] };
+        if (noThresholdRegressed(currentState, testState)) {
           minimizedSp[stat] = minimizedSp[stat] - 1;
-          currentScore = testResult.score;
+          currentState = testState;
           if (!reductions[stat]) reductions[stat] = { from: sp[stat] || 0, to: minimizedSp[stat], saved: 0 };
           reductions[stat].to = minimizedSp[stat];
           reductions[stat].saved += 1;

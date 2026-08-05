@@ -1,0 +1,20 @@
+ 730|        // load-bearing — the Pokemon must NOT already survive with 0 SP in the
+ 731|        // attributed stat (all other stats at candidate values). If the Pokemon
+ 732|        // survives the attack even without investment in this stat, the threshold
+ 733|        // is invalid and must not appear in output or justify any SP.
+ 734|        const verifySpZeroed = { hp: 0, atk: 0, def: 0, spa: 0, spd: 0, spe: 0, ...sp };
+ 735|        verifySpZeroed[attributedStat] = 0;
+ 736|        const verifyStats = {};
+ 737|        for (const s of ['hp', 'atk', 'def', 'spa', 'spd', 'spe']) {
+ 738|          const alignment = s === 'hp' ? 1.0 : natureMultiplierFor(nature, s);
+ 739|          verifyStats[s] = calcStat(pokemon[s], verifySpZeroed[s], alignment, s === 'hp');
+ 740|        }
+ 741|        const verifyResult = await weightedDefensiveDamage({
+ 742|          attackerRow, move: threat.move, attackerSpreads, attackerItem, defenderRow: pokemon,
+ 743|          defenderFinalStats: verifyStats, defenderSp: verifySpZeroed, defenderNature: nature, defenderItem: item, threatPrimaryNature: threat.primary_nature, fieldOpts,
+ 744|        });
+ 745|        // If the Pokemon already survives at 0 SP in the attributed stat, this
+ 746|        // threshold is not a real reason to invest — skip it entirely
+ 747|        if (verifyResult.koCheckValue < 100) continue;
+ 748|
+ 749|        met.push({

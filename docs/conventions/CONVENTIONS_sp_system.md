@@ -107,12 +107,16 @@ When role is `fast_offense` or `fast_support` and base Speed ≥ 90, the generat
 ## SP Minimization
 
 After the GA finds its top spread, a minimization pass runs (`spread_scorer.js:minimizeSpread()`):
-1. Strip unattributable SP (SP in stats where no threshold was cleared)
-2. For each stat: decrease SP by 1 if the score is unchanged
+The function greedily decreases each stat by 1 SP, verifying via scoreSpread() that the score is unchanged. Every SP removal is checked against all thresholds — there is no bulk-strip step, so defensive SP that is load-bearing for a threshold attributed to a different stat (e.g., Def enabling an HP-tagged survival threshold) is never silently removed.
+
+Priority order: HP → relevant defense → relevant offense → remaining → speed.
+The loop repeats until no stat can be decreased further.
+
+After minimization completes, a final scoreSpread() pass computes thresholds_met against the actual minimized spread, ensuring all displayed damage numbers match the printed spread exactly.
 
 This ensures the final spread is the minimum SP that achieves its score. Only runs in team-build mode.
 
-**Verified at:** `spread_optimizer.js:573-580`, `spread_scorer.js:1060-1100`.
+**Verified at:** `spread_optimizer.js:573-580`, `spread_scorer.js:1040-1120`.
 
 ---
 

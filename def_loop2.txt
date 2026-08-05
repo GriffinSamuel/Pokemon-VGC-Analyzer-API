@@ -1,0 +1,43 @@
+ 658|
+ 659|    const [current, baseline] = await Promise.all([
+ 660|      weightedDefensiveDamage({
+ 661|        attackerRow, move: threat.move, attackerSpreads, attackerItem, defenderRow: pokemon,
+ 662|        defenderFinalStats: finalStats, defenderSp: sp, defenderNature: nature, defenderItem: item, threatPrimaryNature: threat.primary_nature, fieldOpts,
+ 663|      }),
+ 664|      weightedDefensiveDamage({
+ 665|        attackerRow, move: threat.move, attackerSpreads, attackerItem, defenderRow: pokemon,
+ 666|        defenderFinalStats: baselineStats, defenderSp: ZERO_SP, defenderNature: nature, defenderItem: item, threatPrimaryNature: threat.primary_nature, fieldOpts,
+ 667|      }),
+ 668|    ]);
+ 669|
+ 670|    const koResult = koFromPercent(current.koCheckValue);
+ 671|    const baselineKo = koFromPercent(baseline.koCheckValue);
+ 672|    if (baselineKo === 'OHKO') attackersThatOhkoAtBaseline.add(threat.attacker.toLowerCase());
+ 673|    const factor = defensiveFactor(baselineKo, koResult);
+ 674|    const statKey = moveRow.category === 'Physical' ? 'def' : 'spd';
+ 675|
+ 676|    // FIX 1: aggression_multiplier — is this attacker's specific move a
+ 677|    // realistic threat against this specific defender, given the attacker's
+ 678|    // own role and this move's STAB/effectiveness against us? Cached (see
+ 679|    // getCachedAggressionMultiplier) since it's identical across every
+ 680|    // candidate SP spread scored for this defender.
+ 681|    const aggressionMultiplier = await getCachedAggressionMultiplier(
+ 682|      pokemon.name.toLowerCase(), threat.attacker.toLowerCase(), threat.move.toLowerCase(),
+ 683|      attackerRow, moveRow, moveRow.type, defenderTypes
+ 684|    );
+ 685|    const effectiveWeight = round(threat.weight * aggressionMultiplier, 6);
+ 686|
+ 687|    if (factor > 0) {
+ 688|      // FIX 2: a baseline of 4HKO (or worse) previously fell into the same
+ 689|      // '3hko_prevented' bucket as a genuine 3HKO baseline (the old ternary had
+ 690|      // no 4th branch) — split out so 4HKO-prevented gets its own, far smaller
+ 691|      // type_value instead of being silently over-credited at 3HKO's rate.
+ 692|      const multKey = baselineKo === 'OHKO' ? 'ohko_prevented'
+ 693|        : baselineKo === '2HKO' ? '2hko_prevented'
+ 694|        : baselineKo === '3HKO' ? '3hko_prevented'
+ 695|        : '4hko_prevented';
+ 696|      // FIX 5: Focus Sash holders already survive one OHKO — zero out OHKO_prevented
+ 697|      // contribution so the optimizer doesn't waste SP on surviving hits the sash covers.
+ 698|      // 2HKO/3HKO prevention still matters (sash doesn't prevent follow-up hits).
+ 699|      // Per interview Q5: heavily down-weighted (0.1x), not excluded entirely.
+ 700|      const isFocusSash = itemLower === 'focus sash';

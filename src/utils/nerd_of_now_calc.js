@@ -796,6 +796,11 @@ function calcSingleMove(attacker, defender, move, field) {
     defenseStat = Math.floor(defenseStat * 1.5);
   }
 
+  // Gen 9 Sand Special Defense boost: Rock-type Pokemon get 1.5x SpD in Sand
+  if (wLower === 'sand' && !isPhysical && defender.types && defender.types.includes('Rock')) {
+    defenseStat = Math.floor(defenseStat * 1.5);
+  }
+
   // --- STEP 1: Base damage (before all modifiers except BP/stat calcs)
   let baseDamage = calcBaseDamage(finalBP, attackStat, defenseStat);
 

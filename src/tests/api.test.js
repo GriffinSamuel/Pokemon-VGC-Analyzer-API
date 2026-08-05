@@ -4,6 +4,7 @@ const app = require('../app');
 const { invalidateCacheForPokemon, damageCache, buildCacheKey, setCachedDamage } = require('../scrapers/serebii');
 const { effectivenessAgainst } = require('../utils/typeChart');
 const { itemRoleFit } = require('../utils/item_optimizer');
+const { getMoveData } = require('../utils/nerd_of_now_calc');
 
 async function runTests() {
   let passed = 0;
@@ -711,6 +712,122 @@ Careful Nature
     assert(res.status === 200, `Expected 200, got ${res.status}`);
     const mentionsTrickRoom = body.team_analysis.synergies.some((s) => s.reasons.some((r) => r.includes('Trick Room')));
     assert(!mentionsTrickRoom, `Expected no Trick Room synergy reason for a 3+-fast-member team, got: ${JSON.stringify(body.team_analysis.synergies.map((s) => s.reasons))}`);
+  });
+
+  // --- Bug 1 regression: primary (binding) threshold selection is by KO-tier
+  // delta (category-aware) with a damage tiebreak, NOT by contribution.
+  // Venusaur's HP hosts four OHKO→2HKO survivors (all delta +1); the old
+  // comparator picked the highest-contribution one (Farigiraf Psychic, 80.7%
+  // max) even though Metagross-Mega Psychic Fangs (94.1%) and Froslass-Mega
+  // Blizzard (99.5%) hit harder. The fix must show the hardest hit survived.
+  await test('POST /api/team/build: Venusaur HP primary threshold is the highest-damage survivor, not Farigiraf', async () => {
+    const res = await fetch(`${BASE_URL}/api/team/build`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'text/plain' },
+      body: JSON.stringify({ team: ['Charizard-Mega-Y', 'Venusaur', 'Whimsicott', 'Kingambit', 'Archaludon', 'Pelipper'] }),
+    });
+    const text = await res.text();
+    assert(res.status === 200, `Expected 200, got ${res.status}`);
+    const lines = text.split('\n');
+    const venusaurIdx = lines.findIndex((l) => l.startsWith('Venusaur @'));
+    assert(venusaurIdx !== -1, 'Expected a Venusaur section in the build');
+    const whyLine = lines.slice(venusaurIdx, venusaurIdx + 12).find((l) => l.includes('Why:') && l.includes('HP'));
+    assert(whyLine, `Expected a Venusaur HP Why line, got:\n${lines.slice(venusaurIdx, venusaurIdx + 12).join('\n')}`);
+    assert(!whyLine.includes('Farigiraf'), `Venusaur HP primary must not cite Farigiraf Psychic (old contribution tiebreak), got: ${whyLine}`);
+    const dmg = whyLine.match(/survives (.+?) \([\w\- ]+: (\d+(?:\.\d+)?)-(\d+(?:\.\d+)?)%/);
+    assert(dmg && parseFloat(dmg[2]) > 80.7, `Expected primary HP survivor to deal more damage than Farigiraf (80.7%), got: ${whyLine}`);
+  });
+
+  // --- Bug 2a regression: the defensive stat named in an OFFENSIVE threshold
+  // line comes from the move's category (SpD for Special, Def for Physical),
+  // not from attacker_build — which is only set on defensive thresholds, so the
+  // old code labeled every offensive line "Def".
+  await test('POST /api/team/build: special-move offensive thresholds label SpD, physical label Def', async () => {
+    const res = await fetch(`${BASE_URL}/api/team/build`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'text/plain' },
+      body: JSON.stringify({ team: ['Charizard-Mega-Y', 'Venusaur', 'Whimsicott', 'Kingambit', 'Archaludon', 'Pelipper'] }),
+    });
+    const text = await res.text();
+    assert(res.status === 200, `Expected 200, got ${res.status}`);
+    const offLines = text.split('\n').filter((l) => /(?:OHKO|2HKO|3HKO)s .+ with .+ \(/.test(l));
+    assert(offLines.length > 0, `Expected at least one offensive threshold line, got:\n${text}`);
+    for (const line of offLines) {
+      const m = line.match(/(?:OHKO|2HKO|3HKO)s (.+) with (.+?) \(/);
+      if (!m) continue;
+      const moveData = getMoveData(m[2]);
+      if (!moveData || moveData.category === 'Status') continue;
+      const expected = moveData.category === 'Special' ? 'SpD' : 'Def';
+      const vs = line.match(/vs \d+HP\/\d+(SpD|Def)/);
+      if (vs) {
+        assert(vs[1] === expected, `Move "${m[2]}" is ${moveData.category} but labeled vs ${vs[1]} in: ${line}`);
+      }
+    }
+  });
+
+  // --- Bug 2b regression: per-Pokemon weather — Charizard-Mega-Y's Solar Beam
+  // must be computed under its OWN Sun (Drought), not a shared team weather that
+  // could pick Pelipper's Rain and halve it. Both weathers must be surfaced:
+  // Sun as primary, Rain as an alternative.
+  await test('POST /api/team/build: Charizard-Mega-Y Solar Beam shows Sun primary + Rain alternative', async () => {
+    const res = await fetch(`${BASE_URL}/api/team/build`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ team: ['Charizard-Mega-Y', 'Venusaur', 'Whimsicott', 'Kingambit', 'Archaludon', 'Pelipper'] }),
+    });
+    const body = await res.json();
+    assert(res.status === 200, `Expected 200, got ${res.status}`);
+    const cz = body.team.find((m) => m.pokemon === 'Charizard-Mega-Y');
+    assert(cz, 'Expected Charizard-Mega-Y in build');
+    const sb = (cz.thresholds_met || []).find((t) => t.category === 'offensive' && t.threat.includes('Solar Beam') && t.threat.includes('Basculegion'));
+    assert(sb, `Expected a Solar Beam vs Basculegion offensive threshold, got ${JSON.stringify((cz.thresholds_met || []).map((t) => t.threat))}`);
+    assert(sb.primary_weather === 'Sun', `Expected primary_weather Sun (Charizard's own Drought), got ${sb.primary_weather}`);
+    assert(sb.weighted_damage_max > 100, `Expected full-power Solar Beam (>100%) under Sun, got ${sb.weighted_damage_max}`);
+    const rainAlt = (sb.alt_weathers || []).find((a) => a.weather === 'Rain');
+    assert(rainAlt, `Expected a Rain alternative for Solar Beam, got ${JSON.stringify(sb.alt_weathers)}`);
+    assert(rainAlt.weighted_damage_max < 70, `Expected Rain alt to be halved (<70%), got ${rainAlt.weighted_damage_max}`);
+  });
+
+  // --- Part 2 regression: the displayed spread must BE the minimized
+  // (load-bearing) floor, not a padded pre-minimization spread with a separate
+  // "minimization" side-channel. "Budget is a ceiling, not a target" (CLAUDE.md)
+  // — a stat with no threshold requiring it must show 0 slack, matching
+  // minimization.justified_sp exactly, for every team member (not just one).
+  await test('POST /api/team/build: displayed sp has no removable slack (matches minimized floor)', async () => {
+    const res = await fetch(`${BASE_URL}/api/team/build`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ team: ['Charizard-Mega-Y', 'Venusaur', 'Whimsicott', 'Kingambit', 'Archaludon', 'Pelipper'] }),
+    });
+    const body = await res.json();
+    assert(res.status === 200, `Expected 200, got ${res.status}`);
+    for (const m of body.team) {
+      assert(m.minimization && m.minimization.justified_sp, `Expected minimization data for ${m.pokemon}`);
+      for (const stat of ['hp', 'atk', 'def', 'spa', 'spd', 'spe']) {
+        const shown = m.sp[stat] || 0;
+        const floor = m.minimization.justified_sp[stat] || 0;
+        assert(shown === floor, `${m.pokemon} sp.${stat}=${shown} has removable slack — minimized floor is ${floor}`);
+      }
+    }
+  });
+
+  // --- Part 3 regression: every speed threshold must cite a non-null,
+  // positive frequency for the attacker spread it's outspeeding, so the Why
+  // block can show "X% of <attacker>" rather than an unsupported claim.
+  await test('POST /api/team/build: speed thresholds carry a real frequency figure', async () => {
+    const res = await fetch(`${BASE_URL}/api/team/build`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ team: ['Charizard-Mega-Y', 'Venusaur', 'Whimsicott', 'Kingambit', 'Archaludon', 'Pelipper'] }),
+    });
+    const body = await res.json();
+    assert(res.status === 200, `Expected 200, got ${res.status}`);
+    const speedThresholds = body.team.flatMap((m) => (m.thresholds_met || []).filter((t) => t.category === 'speed'));
+    assert(speedThresholds.length > 0, 'Expected at least one speed threshold across the team');
+    for (const t of speedThresholds) {
+      const freq = t.attacker_spreads_used && t.attacker_spreads_used[0] && t.attacker_spreads_used[0].frequency;
+      assert(typeof freq === 'number' && freq > 0, `Speed threshold "${t.threat}" has no frequency: ${JSON.stringify(t.attacker_spreads_used)}`);
+    }
   });
 
   await test('GET /api/tournament/teams returns array with pokemon field', async () => {
