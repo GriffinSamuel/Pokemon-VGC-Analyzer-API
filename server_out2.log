@@ -1,5 +1,0 @@
-{"level":"info","timestamp":"2026-08-05T02:32:20.459Z","message":"Serebii scraper started"}
-{"level":"info","timestamp":"2026-08-05T02:32:20.490Z","message":"Server running on http://localhost:3000"}
-{"level":"info","timestamp":"2026-08-05T02:32:20.583Z","message":"Mega item mapping audit: all real scraped -ite items are mapped","checked":61}
-{"level":"info","timestamp":"2026-08-05T02:32:20.911Z","message":"Found 5 stat changes on Serebii patch page"}
-{"level":"info","timestamp":"2026-08-05T02:32:20.940Z","message":"Serebii scrape complete: 0 new patches inserted"}

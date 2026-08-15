@@ -6,3 +6,10 @@ src/ml/data/
 src/ml/models/
 graphify-out/
 __pycache__/
+
+*.log
+def_loop*.txt
+minimize_body.txt
+build_verify.json
+graphify-out/
+__pycache__/
