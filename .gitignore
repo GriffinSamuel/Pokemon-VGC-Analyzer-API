@@ -13,3 +13,6 @@ minimize_body.txt
 build_verify.json
 graphify-out/
 __pycache__/
+
+diagnose_sp.js
+show_why.js

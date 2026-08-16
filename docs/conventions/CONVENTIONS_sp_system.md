@@ -48,13 +48,40 @@ All damage calcs use CalcDamage() from `nerd_of_now_calc.js`, which speaks SP (0
 
 ---
 
+## Defensive Threshold Attribution
+
+Every defensive `thresholds_met` entry is tagged with the ONE stat whose investment produced it. The rule, in order:
+
+1. The move's real defending stat is the primary candidate — `def` for a Physical hit, `spd` for a Special one.
+2. That stat is "load-bearing" if forcing it to 0 (every other stat left at its candidate value) changes the KO tier. If so, attribute to it.
+3. Only if the real defending stat is NOT load-bearing, test HP the same way. If HP is load-bearing, attribute to `hp`.
+4. If neither is load-bearing alone, the threshold is dropped (see the guard below).
+
+**Why the order matters:** HP is the denominator of every damage percentage, so zeroing it moves a KO tier in nearly every case. An HP-first rule therefore relabels essentially every defensive threshold as `hp`, leaving Def and SpD with nothing tagged to them — and `minimizeSpread()` only protects investment that some `thresholds_met` entry depends on, so it strips Def/SpD out. Measured live on the standing six-Pokemon team: 100% of surviving thresholds tagged `hp`, 0 tagged `def`/`spd`, with Archaludon losing SpD 13→0 and Pelipper losing Def 21→0.
+
+**Verified at:** `spread_scorer.js` DEFENSIVE loop, `zeroedKoFor()` and the attribution block immediately after it.
+
+---
+
 ## Marginal-Value Guard
 
-A defensive threshold only justifies SP investment if, WITHOUT that investment, the Pokemon would be KO'd, and WITH it, it survives. If `survival_without_investment === true`, the threshold provides zero marginal value and must not appear in the Why block.
+A defensive threshold only justifies SP if the attributed stat's investment produces a **KO-tier improvement** relative to that stat sitting at 0:
 
-**Why:** Investing SP in a stat where you already survive is wasted — the threshold was cleared at 0 SP. The marginal-value guard prevents the optimizer from recommending SP that provides no outcome change.
+```javascript
+if (tierIndex(koResult) <= tierIndex(koWithoutAttributed)) continue;
+```
 
-**Verified at:** `recommend.js:205-210` (`formatDefensiveThreshold()` returns null when `survival_without_investment === true`).
+A 2HKO→3HKO or 3HKO→no_ko gain counts. The bar is NOT "would we be OHKO'd without it".
+
+**Why:** `defensiveFactor()` already credits sub-OHKO tier deltas, and `score += contribution` banks them before this point. The guard decides only what enters `thresholds_met`. If the guard is stricter than the scorer, the two optimise different objectives — and because `minimizeSpread()` accepts or rejects each −1 SP step purely on `thresholds_met`, SP the scorer paid for gets refunded. **Scoring and display must never disagree.**
+
+The prior rule was `verifyResult.koCheckValue < 100`. Its counterfactual zeroes one stat while `baseline_ko` zeroes all six, so the counterfactual can never deal more damage than the baseline — meaning that test could only pass when `baseline_ko` was already `OHKO`. Every sub-OHKO improvement was silently discarded.
+
+**Known gap:** a threshold that is load-bearing only ACROSS stats (neither Def nor HP alone flips the tier, but removing both does) is still dropped. See the cross-stat attribution item in the project journal.
+
+**Verified at:** `spread_scorer.js` DEFENSIVE loop, immediately before `met.push(...)`.
+
+**Note:** `recommend.js:206`'s `survival_without_investment` check is a SEPARATE, older filter that applies only to the `GET /api/recommend/evs` JSON path. It does not govern the Why block and is not reachable from `POST /api/team/build`.
 
 ---
 

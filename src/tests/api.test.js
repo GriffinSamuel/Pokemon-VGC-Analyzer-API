@@ -720,7 +720,23 @@ Careful Nature
   // comparator picked the highest-contribution one (Farigiraf Psychic, 80.7%
   // max) even though Metagross-Mega Psychic Fangs (94.1%) and Froslass-Mega
   // Blizzard (99.5%) hit harder. The fix must show the hardest hit survived.
-  await test('POST /api/team/build: Venusaur HP primary threshold is the highest-damage survivor, not Farigiraf', async () => {
+  // RETARGETED after the attribution fix. The original assertion was
+  // "Venusaur's HP line cites the hardest hitter on the team", which was only
+  // ever true because HP was absorbing thresholds that belonged to Def/SpD:
+  // zeroing HP moves a KO tier in nearly every case, so HP won attribution
+  // unconditionally. With attribution corrected, Metagross-Mega Psychic Fangs
+  // (Physical, 94.1% max) belongs on Def and Froslass-Mega Blizzard (Special,
+  // 99.5% max) on SpD — both figures the original comment itself named. Neither
+  // was lost; both moved to the stat that earns them.
+  //
+  // The original also compared the range MINIMUM against 80.7, which is
+  // Farigiraf's MAXIMUM — an apples-to-oranges check that happened to pass.
+  //
+  // The intent it was written to defend is unchanged and still enforced here:
+  // a stat's primary threshold is chosen by DAMAGE, not by popularity. This
+  // version adds a third assertion the original lacked, which fails loudly if
+  // the hard-hitting thresholds are ever hoovered back into HP.
+  await test('POST /api/team/build: Venusaur stat primaries are damage-ranked, and hard hitters sit on Def/SpD not HP', async () => {
     const res = await fetch(`${BASE_URL}/api/team/build`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Accept: 'text/plain' },
@@ -731,11 +747,25 @@ Careful Nature
     const lines = text.split('\n');
     const venusaurIdx = lines.findIndex((l) => l.startsWith('Venusaur @'));
     assert(venusaurIdx !== -1, 'Expected a Venusaur section in the build');
-    const whyLine = lines.slice(venusaurIdx, venusaurIdx + 12).find((l) => l.includes('Why:') && l.includes('HP'));
-    assert(whyLine, `Expected a Venusaur HP Why line, got:\n${lines.slice(venusaurIdx, venusaurIdx + 12).join('\n')}`);
-    assert(!whyLine.includes('Farigiraf'), `Venusaur HP primary must not cite Farigiraf Psychic (old contribution tiebreak), got: ${whyLine}`);
-    const dmg = whyLine.match(/survives (.+?) \([\w\- ]+: (\d+(?:\.\d+)?)-(\d+(?:\.\d+)?)%/);
-    assert(dmg && parseFloat(dmg[2]) > 80.7, `Expected primary HP survivor to deal more damage than Farigiraf (80.7%), got: ${whyLine}`);
+    const block = lines.slice(venusaurIdx, venusaurIdx + 30);
+
+    // "32 HP — survives Gholdengo Make It Rain (Modest 32 SpA Life Orb: 74.9-88.2%, ...)"
+    // The "[also: ...]" continuation lines carry no "N <Stat> — survives", so
+    // only primaries match.
+    const primaryPattern = /(\d+)\s+(HP|Def|SpD)\s+—\s+survives\s+(.+?)\s+\([^:)]*:\s*(\d+(?:\.\d+)?)-(\d+(?:\.\d+)?)%/;
+    const primary = {};
+    for (const l of block) {
+      const m = l.match(primaryPattern);
+      if (m && !primary[m[2]]) primary[m[2]] = { threat: m[3], min: parseFloat(m[4]), max: parseFloat(m[5]), line: l.trim() };
+    }
+    const seen = Object.keys(primary).map((k) => `${k}: ${primary[k].line}`).join('\n  ') || '(none)';
+
+    assert(primary.HP, `Expected a Venusaur HP Why line naming a threat with a damage range. Lines found:\n  ${seen}\n\nBlock:\n${block.join('\n')}`);
+    assert(!primary.HP.line.includes('Farigiraf'), `Venusaur HP primary must not cite Farigiraf Psychic (the old popularity tiebreak), got: ${primary.HP.line}`);
+    assert(primary.Def, `Expected a Venusaur Def Why line naming a threat with a damage range — a physical threshold is being attributed elsewhere. Lines found:\n  ${seen}`);
+
+    const harder = ['Def', 'SpD'].filter((s) => primary[s] && primary[s].max > primary.HP.max);
+    assert(harder.length > 0, `Expected at least one of Venusaur's Def/SpD primaries to cite a harder-hitting survivor than its HP primary (${primary.HP.max}% max) — the hardest hitters are being absorbed into HP again. Lines found:\n  ${seen}`);
   });
 
   // --- Bug 2a regression: the defensive stat named in an OFFENSIVE threshold
@@ -828,6 +858,110 @@ Careful Nature
       const freq = t.attacker_spreads_used && t.attacker_spreads_used[0] && t.attacker_spreads_used[0].frequency;
       assert(typeof freq === 'number' && freq > 0, `Speed threshold "${t.threat}" has no frequency: ${JSON.stringify(t.attacker_spreads_used)}`);
     }
+  });
+
+  // --- SP attribution + marginal-value guard regressions ------------------
+  // One build, reused by the four tests below (JSON and text/plain), so this
+  // group costs a single ~20s team build rather than four.
+  const SP_REGRESSION_TEAM = ['Charizard-Mega-Y', 'Venusaur', 'Whimsicott', 'Kingambit', 'Archaludon', 'Pelipper'];
+  let spRegressionCache = null;
+  async function getSpRegressionBuild() {
+    if (spRegressionCache) return spRegressionCache;
+    const [jsonRes, textRes] = await Promise.all([
+      fetch(`${BASE_URL}/api/team/build`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ team: SP_REGRESSION_TEAM }),
+      }),
+      fetch(`${BASE_URL}/api/team/build`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'text/plain' },
+        body: JSON.stringify({ team: SP_REGRESSION_TEAM }),
+      }),
+    ]);
+    spRegressionCache = { body: await jsonRes.json(), text: await textRes.text() };
+    return spRegressionCache;
+  }
+  const defensiveThresholds = (body) =>
+    body.team.flatMap((m) => (m.thresholds_met || [])
+      .filter((t) => t.category === 'defensive')
+      .map((t) => ({ pokemon: m.pokemon, ...t })));
+
+  // A defensive threshold created by a physical hit belongs to Def, and by a
+  // special hit to SpD. The old attribution promoted 'hp' whenever zeroing HP
+  // moved the KO tier — which, HP being the denominator of every damage
+  // percentage, was nearly always. Measured on this exact team before the fix:
+  // 5 of 6 members had 100% of their defensive thresholds tagged 'hp' and ZERO
+  // tagged def/spd, so minimizeSpread saw nothing protecting Def/SpD and
+  // stripped that investment (Archaludon spd 13->0, Pelipper def 21->0).
+  await test('POST /api/team/build: defensive thresholds are attributed to Def/SpD, not universally HP', async () => {
+    const { body } = await getSpRegressionBuild();
+    const defensive = defensiveThresholds(body);
+    assert(defensive.length > 0, 'Expected at least one defensive threshold across the team');
+    const byStat = defensive.reduce((acc, t) => { acc[t.stat] = (acc[t.stat] || 0) + 1; return acc; }, {});
+    const membersWithRealStat = body.team.filter((m) => (m.thresholds_met || [])
+      .some((t) => t.category === 'defensive' && (t.stat === 'def' || t.stat === 'spd'))).length;
+    assert(membersWithRealStat >= 3,
+      `Expected >=3 of 6 members to carry a Def/SpD-attributed defensive threshold, got ${membersWithRealStat}. Team-wide tags: ${JSON.stringify(byStat)}`);
+  });
+
+  // The shipped guard was `verifyResult.koCheckValue < 100` — the Pokemon had to
+  // be OHKO'd with the attributed stat at 0. That counterfactual zeroes ONE stat
+  // while baseline_ko zeroes all six, so the counterfactual can never deal more
+  // damage than the baseline: passing the old guard mathematically forced
+  // baseline_ko === 'OHKO'. Every 2HKO->3HKO or 3HKO->no_ko gain scored points
+  // via defensiveFactor() and was then dropped from thresholds_met. A single
+  // credited sub-OHKO baseline proves the guard is tier-based, not OHKO-based.
+  await test('POST /api/team/build: sub-OHKO tier improvements are credited, not silently discarded', async () => {
+    const { body } = await getSpRegressionBuild();
+    const defensive = defensiveThresholds(body);
+    assert(defensive.length > 0, 'Expected at least one defensive threshold across the team');
+    const subOhko = defensive.filter((t) => t.baseline_ko && t.baseline_ko !== 'OHKO');
+    assert(subOhko.length > 0,
+      `Every credited defensive threshold has baseline_ko === 'OHKO', which is exactly what the pre-fix guard forced. Expected at least one sub-OHKO tier improvement. Baselines seen: ${JSON.stringify(defensive.map((t) => `${t.pokemon}:${t.baseline_ko}->${t.this_spread_ko}`))}`);
+  });
+
+  // SANITY BAND. Catches the over-correction where the guard is disabled rather
+  // than repaired — that would pass both tests above while admitting thresholds
+  // for stats the spread never invested in. A threshold can only be attributed
+  // to a stat whose investment actually moves the KO tier, and zeroing a stat
+  // already at 0 moves nothing, so this must hold by construction.
+  await test('POST /api/team/build: every defensive threshold names a stat the spread actually invests in', async () => {
+    const { body } = await getSpRegressionBuild();
+    for (const m of body.team) {
+      for (const t of (m.thresholds_met || []).filter((x) => x.category === 'defensive')) {
+        const invested = m.sp[t.stat] || 0;
+        assert(invested > 0,
+          `${m.pokemon}: defensive threshold "${t.threat}" is attributed to ${t.stat} but the spread invests 0 SP there — the marginal-value guard is not filtering`);
+      }
+    }
+  });
+
+  // Literal-string acceptance, per the project's own rule that criteria must not
+  // be satisfiable by a stray number. A Def or SpD Why line must name a threat
+  // and carry a real damage range, e.g.
+  //   18 Def — survives Kingambit Iron Head (Adamant 32 Atk: 58.7-69.4%)
+  //
+  // Counted PER MEMBER, not team-wide. A team-wide "at least one such line"
+  // check passes on the pre-fix code, because Pelipper alone already carried
+  // SpD-attributed thresholds — such a test would not discriminate and would
+  // be worthless as a regression guard.
+  await test('POST /api/team/build: at least 3 members have a Def or SpD Why line naming a threat and damage range', async () => {
+    const { text } = await getSpRegressionBuild();
+    const lines = text.split('\n');
+    const pattern = /\d+\s+(Def|SpD)\s+—\s+survives\s+\S+.*\d+(?:\.\d+)?-\d+(?:\.\d+)?%/;
+    const starts = SP_REGRESSION_TEAM
+      .map((name) => ({ name, idx: lines.findIndex((l) => l.startsWith(`${name} @`)) }))
+      .filter((s) => s.idx !== -1)
+      .sort((a, b) => a.idx - b.idx);
+    assert(starts.length === 6, `Expected 6 member sections in the team sheet, found ${starts.length}`);
+    const hits = [];
+    for (let i = 0; i < starts.length; i++) {
+      const end = i + 1 < starts.length ? starts[i + 1].idx : starts[i].idx + 40;
+      if (lines.slice(starts[i].idx, end).some((l) => pattern.test(l))) hits.push(starts[i].name);
+    }
+    assert(hits.length >= 3,
+      `Only ${hits.length} of 6 members (${hits.join(', ') || 'none'}) have a Def/SpD Why line with a named threat and damage range — Def/SpD investment is going unjustified in the rendered output`);
   });
 
   await test('GET /api/tournament/teams returns array with pokemon field', async () => {

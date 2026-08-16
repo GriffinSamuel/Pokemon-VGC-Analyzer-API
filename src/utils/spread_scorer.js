@@ -55,7 +55,12 @@ const DEATH_TRAP_PENALTY_MULTIPLIER = 2.0;
 // Bumped 4->5 this round: attacker items are now threaded into the real damage
 // calc itself (FIX 3/4), not just display — a genuine scoring-relevant change,
 // not merely a cosmetic one, so stale pre-fix cached scores must not survive.
-const SCORER_VERSION = 9;
+// Bumped 9->10: defensive threshold attribution and the marginal-value guard
+// both changed (see the DEFENSIVE loop). `score` itself is unchanged, but
+// `thresholds_met` is what minimizeSpread() accepts or rejects each -1 SP step
+// against, so the final minimized spread this file produces genuinely differs.
+// Cached pre-fix results must not survive.
+const SCORER_VERSION = 10;
 
 // FIX 2: steeper type_value curve. This is a NEW multiplicative layer specific
 // to this file's evolutionary scorer — it does not replace or alter
@@ -610,20 +615,11 @@ async function scoreSpread(pokemon, sp, nature, role, threatMatrix, metaContext,
   const baselineStats = computeFinalStats(pokemon, ZERO_SP, nature);
   const defenderTypes = [pokemon.type1, pokemon.type2].filter(Boolean);
 
-  // FIX 2: real per-threshold HP attribution, detailed-path only (5 calls per
-  // findOptimalSpread() run, never the hot per-candidate scoring loop). Every
-  // defensive `met` entry was previously tagged only 'def'/'spd' by the
-  // attacking move's category — HP investment already legitimately affects
-  // every one of those same KO-tier checks (defenderFinalStats.hp feeds
-  // @smogon/calc's maxHP directly), but never got its own attribution, so
-  // buildSpAllocationWhy() (team.js) could never find a matching thresholds_met
-  // entry for 'hp' even when HP SP was the actual deciding investment — every
-  // HP line silently fell through to a generic "remaining budget at breakpoint"
-  // fallback regardless of whether it earned anything. Computed once per
-  // scoreSpread() call (not per threat) since it only depends on sp/nature.
-  const hpSpValue = sp.hp || 0;
-  const hpZeroedSp = hpSpValue > 0 ? { ...sp, hp: 0 } : null;
-  const hpZeroedStats = hpZeroedSp ? computeFinalStats(pokemon, hpZeroedSp, nature) : null;
+  // Per-threshold stat attribution now lives inside the DEFENSIVE loop below
+  // (see `zeroedKoFor`), because it has to test the move's real defending stat
+  // as well as HP, and which stat that is varies per threat. The old
+  // hoisted-once hpZeroedSp/hpZeroedStats pair only ever tested HP, which is
+  // exactly what made HP win attribution for every threshold.
 
   let score = 0;
   const met = [];
@@ -708,43 +704,70 @@ async function scoreSpread(pokemon, sp, nature, role, threatMatrix, metaContext,
       const contribution = round(effectiveWeight * TYPE_VALUES[multKey] * (roleMult[multKey] ?? 1.0) * factor * itemMult * sashPenalty, 6);
       score += contribution;
       if (detailed) {
-        // FIX 2: did this specific threshold actually need the HP SP invested,
-        // or would the candidate's Def/SpD alone (with HP at 0) have cleared it
-        // just the same? Only tag 'hp' when removing it genuinely regresses the
-        // KO tier — i.e. HP was load-bearing for THIS threshold specifically,
-        // not just "HP happens to be nonzero somewhere on this spread."
-        let attributedStat = statKey;
-        // FIX 3: verify attribution by checking if zeroing each candidate stat
-        // changes the KO tier. Try the secondary stat candidate first (if HP was
-        // already zeroed and didn't change the tier), then the primary.
-        if (hpZeroedStats) {
-          const hpZeroedResult = await weightedDefensiveDamage({
+        // KO tier for this threat with ONE stat forced to 0 and every other stat
+        // left at its candidate value. Used both to attribute the threshold to a
+        // stat and, immediately after, as the marginal-value guard's
+        // counterfactual — so the two always agree and no extra damage calc is
+        // needed for the guard.
+        const zeroedKoFor = async (statToZero) => {
+          const zeroedSp = { ...ZERO_SP, ...sp, [statToZero]: 0 };
+          const zeroedStats = {};
+          for (const s of STAT_ORDER) {
+            const alignment = s === 'hp' ? 1.0 : natureMultiplierFor(nature, s);
+            zeroedStats[s] = calcStat(pokemon[s], zeroedSp[s], alignment, s === 'hp');
+          }
+          const zeroedResult = await weightedDefensiveDamage({
             attackerRow, move: threat.move, attackerSpreads, attackerItem, defenderRow: pokemon,
-            defenderFinalStats: hpZeroedStats, defenderSp: hpZeroedSp, defenderNature: nature, defenderItem: item, threatPrimaryNature: threat.primary_nature, fieldOpts,
+            defenderFinalStats: zeroedStats, defenderSp: zeroedSp, defenderNature: nature,
+            defenderItem: item, threatPrimaryNature: threat.primary_nature, fieldOpts,
           });
-          const hpZeroedKo = koFromPercent(hpZeroedResult.koCheckValue);
-          if (hpZeroedKo !== koResult) attributedStat = 'hp';
+          return koFromPercent(zeroedResult.koCheckValue);
+        };
+
+        // ATTRIBUTION. The move's real defending stat — Def for a physical hit,
+        // SpD for a special one — is the PRIMARY candidate. HP is credited only
+        // when the real defending stat is NOT load-bearing for this threshold
+        // but HP is.
+        //
+        // The previous rule promoted 'hp' whenever zeroing HP moved the KO tier,
+        // without ever asking whether Def/SpD moved it too. HP is the denominator
+        // of every damage percentage, so zeroing it moves a tier nearly always —
+        // and essentially every defensive threshold got relabelled 'hp'. Def and
+        // SpD were then left with no threshold tagged to them, minimizeSpread saw
+        // nothing protecting that investment, and stripped it. Measured live on
+        // the standing six-Pokemon team: 100% of surviving thresholds were tagged
+        // 'hp', while 100% of the thresholds the guard below discarded genuinely
+        // belonged to Def (20 of them) or SpD (31) — not one to HP.
+        const statKoWithout = (sp[statKey] || 0) > 0 ? await zeroedKoFor(statKey) : koResult;
+        let attributedStat = statKey;
+        let koWithoutAttributed = statKoWithout;
+        if (statKoWithout === koResult && (sp.hp || 0) > 0) {
+          const hpKoWithout = await zeroedKoFor('hp');
+          if (hpKoWithout !== koResult) {
+            attributedStat = 'hp';
+            koWithoutAttributed = hpKoWithout;
+          }
         }
 
-        // REGRESSION C: before pushing to met, verify this threshold is actually
-        // load-bearing — the Pokemon must NOT already survive with 0 SP in the
-        // attributed stat (all other stats at candidate values). If the Pokemon
-        // survives the attack even without investment in this stat, the threshold
-        // is invalid and must not appear in output or justify any SP.
-        const verifySpZeroed = { hp: 0, atk: 0, def: 0, spa: 0, spd: 0, spe: 0, ...sp };
-        verifySpZeroed[attributedStat] = 0;
-        const verifyStats = {};
-        for (const s of ['hp', 'atk', 'def', 'spa', 'spd', 'spe']) {
-          const alignment = s === 'hp' ? 1.0 : natureMultiplierFor(nature, s);
-          verifyStats[s] = calcStat(pokemon[s], verifySpZeroed[s], alignment, s === 'hp');
-        }
-        const verifyResult = await weightedDefensiveDamage({
-          attackerRow, move: threat.move, attackerSpreads, attackerItem, defenderRow: pokemon,
-          defenderFinalStats: verifyStats, defenderSp: verifySpZeroed, defenderNature: nature, defenderItem: item, threatPrimaryNature: threat.primary_nature, fieldOpts,
-        });
-        // If the Pokemon already survives at 0 SP in the attributed stat, this
-        // threshold is not a real reason to invest — skip it entirely
-        if (verifyResult.koCheckValue < 100) continue;
+        // MARGINAL-VALUE GUARD. The attributed stat's investment must produce a
+        // real KO-TIER IMPROVEMENT relative to that stat sitting at 0. This is a
+        // tier comparison, not "would we be OHKO'd without it": a 2HKO→3HKO or
+        // 3HKO→no_ko gain is genuine marginal value, defensiveFactor() above
+        // already credits it, and `score += contribution` has already banked it.
+        //
+        // The previous test was `verifyResult.koCheckValue < 100` — it required
+        // an OHKO at zero investment. Because the counterfactual zeroes only one
+        // stat while the true-zero baseline zeroes all six, that test could only
+        // ever pass when baseline_ko was already 'OHKO'. Every sub-OHKO
+        // improvement scored points and was then dropped from `met`, so the
+        // scorer and the Why block optimised different objectives — and
+        // minimizeSpread, which trusts `met` alone, stripped the SP back out.
+        //
+        // KNOWN GAP (unchanged by this fix): a threshold that is load-bearing
+        // only ACROSS stats — neither Def nor HP alone flips the tier, but
+        // removing both does — is still dropped here. See the cross-stat
+        // attribution item in the project journal.
+        if (tierIndex(koResult) <= tierIndex(koWithoutAttributed)) continue;
 
         met.push({
           category: 'defensive',
