@@ -60,7 +60,48 @@ const DEATH_TRAP_PENALTY_MULTIPLIER = 2.0;
 // `thresholds_met` is what minimizeSpread() accepts or rejects each -1 SP step
 // against, so the final minimized spread this file produces genuinely differs.
 // Cached pre-fix results must not survive.
-const SCORER_VERSION = 10;
+// Bumped 10->11: every credited defensive threshold now tests BOTH the stat
+// under consideration and hp against the counterfactual, and records the
+// co-dependency in `also_load_bearing`. That changes which stat a threshold is
+// attributed to, which changes what minimizeSpread() will strip, which changes
+// the final spread. Separately, spread_optimizer now refills every spread to
+// exactly 66 SP after minimization, so a cached pre-fix result would still be
+// served at 64/65 SP and look like the fix had not landed.
+// Bumped 11->12: threshold `threat` strings now carry Weather Ball's resolved
+// attacking type. The strings live inside cached scorer results, so a stale
+// cache entry would keep printing the unlabelled form.
+// Bumped 12->13: the damage calculator now implements defensive items — Focus
+// Sash, all 18 type-resist berries, Assault Vest, Eviolite, Air Balloon. Before
+// this, Utility Umbrella was the ONLY defensive item it understood, so every
+// cached spread was optimised against opponents calculated as itemless. Those
+// numbers are wrong and must not survive.
+const SCORER_VERSION = 13;
+
+// Weather Ball is the only move whose attacking type is not knowable from the
+// moves table — it is stored as Normal and resolved at damage time. The
+// calculator gets this right internally (see resolveWeatherBallType in
+// nerd_of_now_calc.js), but the threat STRING built below is what the Why block
+// prints, and it was showing a bare "Torkoal Weather Ball" — the one move in the
+// output whose type the reader cannot infer from the name.
+//
+// An attacker that sets its own weather always attacks under it (Torkoal's
+// Drought makes its Weather Ball Fire); otherwise the field weather this
+// threshold was calculated under decides.
+const WB_TYPES = { Rain: 'Water', Sun: 'Fire', Sand: 'Rock', Snow: 'Ice' };
+const WB_SETTER_ABILITY = { Drizzle: 'Rain', Drought: 'Sun', 'Sand Stream': 'Sand', 'Snow Warning': 'Snow' };
+
+function normalizeWeather(weather) {
+  if (!weather) return null;
+  const s = String(weather);
+  return s.charAt(0).toUpperCase() + s.slice(1).toLowerCase();
+}
+
+function displayMoveName(moveName, attackerAbility, fieldWeather) {
+  if (moveName !== 'Weather Ball') return moveName;
+  const weather = WB_SETTER_ABILITY[attackerAbility] || normalizeWeather(fieldWeather);
+  const type = weather ? WB_TYPES[weather] : null;
+  return type ? `Weather Ball (${type})` : 'Weather Ball (Normal — no weather)';
+}
 
 // FIX 2: steeper type_value curve. This is a NEW multiplicative layer specific
 // to this file's evolutionary scorer — it does not replace or alter
@@ -376,7 +417,10 @@ function runCalc(attackerRow, attackerSide, defenderRow, defenderSide, moveName,
     defender: {
       name: defenderRow.name, nature: defenderSide.nature || 'Hardy', sp: defenderSide.sp || {},
       item: defenderSide.item || '', ability: defenderRow.ability || '',
-      baseStats: { hp: defenderRow.hp, atk: defenderRow.def, def: defenderRow.def, spa: defenderRow.spa, spd: defenderRow.spd, spe: defenderRow.spe },
+      // Same `atk: defenderRow.def` typo as team_analyzer.js — identical text in
+      // both files, so almost certainly one copy-paste. Only Foul Play reads the
+      // defender's Attack, which is why it survived this long.
+      baseStats: { hp: defenderRow.hp, atk: defenderRow.atk, def: defenderRow.def, spa: defenderRow.spa, spd: defenderRow.spd, spe: defenderRow.spe },
       types: [defenderRow.type1, defenderRow.type2].filter(Boolean),
     },
     move: moveData,
@@ -739,14 +783,33 @@ async function scoreSpread(pokemon, sp, nature, role, threatMatrix, metaContext,
         // 'hp', while 100% of the thresholds the guard below discarded genuinely
         // belonged to Def (20 of them) or SpD (31) — not one to HP.
         const statKoWithout = (sp[statKey] || 0) > 0 ? await zeroedKoFor(statKey) : koResult;
+        const hpKoWithout = (sp.hp || 0) > 0 ? await zeroedKoFor('hp') : koResult;
+        const statIsLoadBearing = statKoWithout !== koResult;
+        const hpIsLoadBearing = hpKoWithout !== koResult;
+
         let attributedStat = statKey;
         let koWithoutAttributed = statKoWithout;
-        if (statKoWithout === koResult && (sp.hp || 0) > 0) {
-          const hpKoWithout = await zeroedKoFor('hp');
-          if (hpKoWithout !== koResult) {
-            attributedStat = 'hp';
-            koWithoutAttributed = hpKoWithout;
-          }
+        if (!statIsLoadBearing && hpIsLoadBearing) {
+          attributedStat = 'hp';
+          koWithoutAttributed = hpKoWithout;
+        }
+
+        // CO-DEPENDENCY. A survival is frequently held up by the defending stat
+        // AND by HP at the same time — remove either one on its own and the KO
+        // tier regresses. One `stat` tag cannot express that, and the Why block
+        // reads off the tag, so the un-tagged stat ends up citing whatever weak
+        // threshold it happens to own instead of the real reason it is invested.
+        //
+        // Observed: Archaludon at 25 HP / 19 Def cited "survives Kingambit Kowtow
+        // Cleave (36.3-44.2%)" on its HP line — a 3HKO — while the actual
+        // constraint holding HP at 25 was Garchomp Earthquake at 99.5% on the Def
+        // line, which crosses 100% and becomes an OHKO the moment HP drops.
+        //
+        // Recording every load-bearing stat lets buildSpAllocationWhy() surface
+        // the same threshold under both, so each line names the real constraint.
+        const alsoLoadBearing = [];
+        if (statIsLoadBearing && hpIsLoadBearing) {
+          alsoLoadBearing.push(attributedStat === 'hp' ? statKey : 'hp');
         }
 
         // MARGINAL-VALUE GUARD. The attributed stat's investment must produce a
@@ -763,16 +826,17 @@ async function scoreSpread(pokemon, sp, nature, role, threatMatrix, metaContext,
         // scorer and the Why block optimised different objectives — and
         // minimizeSpread, which trusts `met` alone, stripped the SP back out.
         //
-        // KNOWN GAP (unchanged by this fix): a threshold that is load-bearing
-        // only ACROSS stats — neither Def nor HP alone flips the tier, but
-        // removing both does — is still dropped here. See the cross-stat
-        // attribution item in the project journal.
+        // KNOWN GAP (unchanged): a threshold load-bearing only ACROSS stats —
+        // neither Def nor HP alone flips the tier, but removing both does — is
+        // still dropped here. `also_load_bearing` covers the case where each is
+        // independently load-bearing, not the case where only the pair is.
         if (tierIndex(koResult) <= tierIndex(koWithoutAttributed)) continue;
 
         met.push({
           category: 'defensive',
           stat: attributedStat,
-          threat: `${threat.attacker} ${threat.move}`,
+          also_load_bearing: alsoLoadBearing,
+          threat: `${threat.attacker} ${displayMoveName(threat.move, attackerAbility, primaryWeather)}`,
           attacker_build: buildAttackerBuildLabel(attackerSpreads, attackerItem, moveRow.category, moveRow.type, attackerAbility),
           baseline_ko: baselineKo,
           this_spread_ko: koResult,
@@ -787,7 +851,7 @@ async function scoreSpread(pokemon, sp, nature, role, threatMatrix, metaContext,
       const spNeeded = {};
       if (koResult === baselineKo && koResult !== 'no_ko' && koResult !== '4HKO') spNeeded[statKey] = 'more SP needed — see thresholds_met on a higher-investment spread';
       missed.push({
-        threat: `${threat.attacker} ${threat.move}`,
+        threat: `${threat.attacker} ${displayMoveName(threat.move, attackerAbility, primaryWeather)}`,
         attacker_build: buildAttackerBuildLabel(attackerSpreads, attackerItem, moveRow.category, moveRow.type, attackerAbility),
         baseline_ko: baselineKo,
         this_spread_ko: koResult,
@@ -1052,7 +1116,11 @@ async function scoreSpread(pokemon, sp, nature, role, threatMatrix, metaContext,
         score -= penalty;
         if (detailed) {
           missed.push({
-            threat: `${threat.attacker} ${threat.move}`,
+            // The attacker-ability lookup lives in the DEFENSIVE loop and is
+            // block-scoped to it, so it is NOT in scope here — referencing it
+            // would throw at runtime the first time this penalty fires. Falls
+            // back to the field weather instead.
+            threat: `${threat.attacker} ${displayMoveName(threat.move, null, primaryWeather)}`,
             baseline_ko: 'OHKO', this_spread_ko: 'OHKO (still outsped)',
             sp_needed_to_improve: {},
             note: `speed_death_trap_penalty: ${threat.attacker} OHKOs at baseline and outspeeds this spread (${topTier.speed_stat} > ${thisSpeed}), with no Protect/priority to avoid it (-${penalty})`,

@@ -22,6 +22,10 @@
 // 1. CONSTANTS — stat labels, type chart, common ability/item sets
 // =============================================================================
 
+// Species weight, for Grass Knot / Low Kick / Heavy Slam / Heat Crash. The
+// `pokemon` table has no weight column; this reads @pkmn/dex instead.
+const { weightOf } = require('./species_weight');
+
 const AT = 'at', DF = 'df', SA = 'sa', SD = 'sd', SP = 'sp', SL = 'sl';
 const ALL_STATS = [AT, DF, SA, SD, SP];
 const LEVEL = 50; // Champions is always Level 50
@@ -260,6 +264,18 @@ function applyCritMod(baseDamage, isCritical) {
  * This is the condensed port of calcGeneralMods's final modifier chain.
  * Preserves the Nerd of Now modifier order exactly.
  */
+// Type-resist berries: item -> the move type it halves. Chilan is the odd one
+// out (it halves Normal moves regardless of effectiveness); every other berry
+// only fires on a super-effective hit.
+const RESIST_BERRIES = {
+  'Occa Berry': 'Fire', 'Passho Berry': 'Water', 'Wacan Berry': 'Electric',
+  'Rindo Berry': 'Grass', 'Yache Berry': 'Ice', 'Chople Berry': 'Fighting',
+  'Kebia Berry': 'Poison', 'Shuca Berry': 'Ground', 'Coba Berry': 'Flying',
+  'Payapa Berry': 'Psychic', 'Tanga Berry': 'Bug', 'Charti Berry': 'Rock',
+  'Kasib Berry': 'Ghost', 'Haban Berry': 'Dragon', 'Colbur Berry': 'Dark',
+  'Babiri Berry': 'Steel', 'Roseli Berry': 'Fairy', 'Chilan Berry': 'Normal',
+};
+
 function applyFinalMods(baseDamage, move, attacker, defender, field, typeEffectiveness, isCritical) {
   const weather = (field.weather || '').toLowerCase();
   const isSun = weather === 'sun';
@@ -359,6 +375,28 @@ function applyFinalMods(baseDamage, move, attacker, defender, field, typeEffecti
 
   // Levitate: immune to Ground moves
   if (defAbility === 'Levitate' && move.type === 'Ground') {
+    return 0;
+  }
+
+  // --- Type-resist berries ----------------------------------------------------
+  // Halve a super-effective hit of the matching type (Chilan is the exception:
+  // it halves ANY Normal move, effective or not). The berry is single-use and
+  // only fires from a state where the Pokemon is alive to eat it, which is the
+  // case the KO question is asking about.
+  //
+  // None of this existed before: an Occa Berry holder took full Fire damage, so
+  // "swap to Occa Berry" was a suggestion the calculator could not honour.
+  const defItem = defender.item || '';
+  const berryType = RESIST_BERRIES[defItem];
+  if (berryType && move.type === berryType) {
+    const isChilan = defItem === 'Chilan Berry';
+    if (isChilan || typeEffectiveness > 1) {
+      baseDamage = Math.floor(baseDamage * 0.5);
+    }
+  }
+
+  // Air Balloon: Ground immunity while held.
+  if (defItem === 'Air Balloon' && move.type === 'Ground') {
     return 0;
   }
 
@@ -592,17 +630,108 @@ function solarBeamBP(moveName, weather) {
  * @param {Object} defender - { stats, weight, status, boosts }
  * @returns {number|null} resolved BP, or null to use move.bp as-is
  */
+// Fraction of max HP the attacker is assumed to be at.
+//
+// No caller supplies attacker.hp, and `(attacker.hp || 0) / (attacker.maxHP || 1)`
+// therefore evaluated to 0 for every HP-scaling move. That broke three moves in
+// TWO directions: Eruption and Water Spout resolved to their 1 BP floor (they
+// scale UP with HP), while Flail and Reversal resolved to their 200 BP ceiling
+// (they scale DOWN). A 150 BP Eruption was being reported as 0-0.6% damage.
+//
+// A damage calculator asked "what does this do" with no HP stated means full
+// HP — the same convention this file already uses for `defender.isFullHP !== false`.
+// Distinct from null. `null` from resolveVariableBP has always meant "this move
+// has no variable component, use the table BP". UNRESOLVED_BP means "this move
+// DOES vary and we could not determine by how much" — a different answer that
+// callers must be able to tell apart, because printing the table BP for a move
+// whose real power we don't know is precisely the failure this whole pass is
+// about.
+const UNRESOLVED_BP = Symbol('unresolved-variable-bp');
+
+function attackerHpRatio(attacker) {
+  if (attacker.hp != null && attacker.maxHP) return attacker.hp / attacker.maxHP;
+  // hpFraction was already being carried through CalcDamage and read by nothing.
+  if (attacker.hpFraction != null) return attacker.hpFraction;
+  return 1;
+}
+
+// Same convention on the other side. `defender.isFullHP !== false` is how the
+// rest of this file states "assume full HP unless told otherwise"; Wring Out
+// instead read `defender.hp || defender.stats?.hp`, which fell through to the
+// defender's max-HP STAT (~175) divided by `maxHP || 1` — a ratio of 175, not a
+// ratio of 1 — and resolved Wring Out to roughly 21000 BP.
+function defenderHpRatio(defender) {
+  if (defender.hp != null && defender.maxHP) return defender.hp / defender.maxHP;
+  if (defender.hpFraction != null) return defender.hpFraction;
+  return defender.isFullHP === false ? 0.5 : 1;
+}
+
+/**
+ * Moves whose base power depends on state this analyzer has no way to know at
+ * team preview: how many turns a move has been used in a row, whether an ally
+ * already moved, whether the target has been hit yet this turn.
+ *
+ * These are NOT given a default. A default here is a number the product would
+ * print as though it meant something — which is exactly how Last Respects came
+ * to be reported at its 50 BP floor in every line of output for weeks. Returning
+ * the sentinel lets callers refuse to build a recommendation on the move instead
+ * of quietly assuming the first turn of a sequence.
+ *
+ * Multi-hit moves are here for a different reason: this calculator has no
+ * multi-hit engine at all, so treating them as single-hit understates them by
+ * the hit count.
+ */
+const UNMODELLED_VARIABLE_BP = new Set([
+  'fury cutter', 'rollout', 'ice ball', 'echoed voice', 'round',   // consecutive-use
+  'assurance', 'retaliate', 'beat up',                             // ally/turn state
+  'triple axel', 'triple kick', 'population bomb', 'bullet seed',  // multi-hit
+  'rock blast', 'icicle spear', 'scale shot', 'water shuriken',
+  'dual wingbeat', 'double hit', 'tail slap', 'arm thrust',
+]);
+
 function resolveVariableBP(move, attacker, defender) {
   const name = (move.name || '').toLowerCase();
   const atkSpe = attacker.stats.spe || 0;
   const defSpe = defender.stats.spe || 0;
-  const atkWeight = attacker.weight || 0;
-  const defWeight = defender.weight || 0;
+  const atkWeight = attacker.weight || weightOf(attacker.name);
+  const defWeight = defender.weight || weightOf(defender.name);
+
+  if (UNMODELLED_VARIABLE_BP.has(name)) return UNRESOLVED_BP;
 
   // Last Respects: 50 + (50 × each ally that has fainted)
   if (name === 'last respects') {
     const fainted = attacker.side?.faintedCount || 0;
     return 50 + 50 * fainted;
+  }
+
+  // Rage Fist: 50 + (50 × times the user has been hit), capped at 350
+  if (name === 'rage fist') {
+    const hits = attacker.timesHit || 0;
+    return Math.min(350, 50 + 50 * hits);
+  }
+
+  // Payback: doubles when the user moves second. Speed is the one piece of turn
+  // order this analyzer genuinely does know, so this one is resolvable rather
+  // than unmodelled — priority and Trick Room are handled by the caller passing
+  // an already-inverted Speed pair.
+  if (name === 'payback') {
+    return atkSpe < defSpe ? 100 : 50;
+  }
+
+  // Bolt Beak / Fishious Rend: doubles when the user moves FIRST.
+  if (name === 'bolt beak' || name === 'fishious rend') {
+    return atkSpe > defSpe ? 170 : 85;
+  }
+
+  // Electro Ball: scales with how much faster the user is.
+  if (name === 'electro ball') {
+    if (defSpe === 0) return 150;
+    const ratio = atkSpe / defSpe;
+    if (ratio >= 4) return 150;
+    if (ratio >= 3) return 120;
+    if (ratio >= 2) return 80;
+    if (ratio > 1) return 60;
+    return 40;
   }
 
   // Acrobatics: 110 BP without item, 55 BP with item
@@ -648,7 +777,7 @@ function resolveVariableBP(move, attacker, defender) {
 
   // Flail: power based on user's remaining HP ratio
   if (name === 'flail') {
-    const hpRatio = (attacker.hp || 0) / (attacker.maxHP || 1);
+    const hpRatio = attackerHpRatio(attacker);
     if (hpRatio > 0.695) return 20;
     if (hpRatio > 0.521) return 40;
     if (hpRatio > 0.346) return 80;
@@ -659,7 +788,7 @@ function resolveVariableBP(move, attacker, defender) {
 
   // Reversal: same formula as Flail
   if (name === 'reversal') {
-    const hpRatio = (attacker.hp || 0) / (attacker.maxHP || 1);
+    const hpRatio = attackerHpRatio(attacker);
     if (hpRatio > 0.695) return 20;
     if (hpRatio > 0.521) return 40;
     if (hpRatio > 0.346) return 80;
@@ -670,13 +799,16 @@ function resolveVariableBP(move, attacker, defender) {
 
   // Eruption / Water Spout: 150 × (current HP / max HP), minimum 1
   if (name === 'eruption' || name === 'water spout') {
-    const hpRatio = (attacker.hp || 0) / (attacker.maxHP || 1);
+    const hpRatio = attackerHpRatio(attacker);
     return Math.max(1, Math.floor(150 * hpRatio));
   }
 
-  // Heavy Slam / Heat Crash: weight ratio table
+  // Heavy Slam / Heat Crash: weight ratio table.
+  // An unknown weight used to fall through to 120 — the TOP of the table. Now it
+  // reports unresolved, because "we do not know" and "maximum power" are not the
+  // same claim.
   if (name === 'heavy slam' || name === 'heat crash') {
-    if (defWeight === 0) return 120;
+    if (!atkWeight || !defWeight) return UNRESOLVED_BP;
     const ratio = atkWeight / defWeight;
     if (ratio >= 5) return 120;
     if (ratio >= 4) return 100;
@@ -685,9 +817,9 @@ function resolveVariableBP(move, attacker, defender) {
     return 40;
   }
 
-  // Grass Knot: weight ratio table
-  if (name === 'grass knot') {
-    if (defWeight === 0) return 120;
+  // Grass Knot / Low Kick: target weight table. Same ceiling bug as above.
+  if (name === 'grass knot' || name === 'low kick') {
+    if (!defWeight) return UNRESOLVED_BP;
     if (defWeight >= 200) return 120;
     if (defWeight >= 100) return 100;
     if (defWeight >= 50) return 80;
@@ -696,43 +828,77 @@ function resolveVariableBP(move, attacker, defender) {
     return 20;
   }
 
-  // Wring Out / Crush Grip: 120 × (target's current HP / target's max HP)
+  // Wring Out / Crush Grip / Hard Press: scale with the TARGET's remaining HP.
   if (name === 'wring out' || name === 'crush grip') {
-    const defHpRatio = (defender.hp || defender.stats?.hp || 0) / (defender.maxHP || 1);
-    return Math.max(1, Math.floor(120 * defHpRatio));
+    return Math.max(1, Math.floor(120 * defenderHpRatio(defender)));
+  }
+  if (name === 'hard press') {
+    return Math.max(1, Math.floor(100 * defenderHpRatio(defender)));
   }
 
-  // Spit Up: power = 100 × Stockpile count (Stockpile is consumed)
+  // Brine: doubles once the target is at or below half HP.
+  if (name === 'brine') {
+    return defenderHpRatio(defender) <= 0.5 ? 130 : 65;
+  }
+
+  // Venoshock / Wake-Up Slap / Smelling Salts: double against a specific status.
+  if (name === 'venoshock') {
+    const st = String(defender.status || '').toLowerCase();
+    return (st === 'psn' || st === 'tox' || st.includes('poison')) ? 130 : 65;
+  }
+  if (name === 'wake-up slap' || name === 'wake up slap') {
+    const st = String(defender.status || '').toLowerCase();
+    return (st === 'slp' || st.includes('sleep')) ? 140 : 70;
+  }
+  if (name === 'smelling salts') {
+    const st = String(defender.status || '').toLowerCase();
+    return (st === 'par' || st.includes('paralys')) ? 140 : 70;
+  }
+
+  // Spit Up: 100 × Stockpile count. With no Stockpile the move genuinely has no
+  // power — but returning 0 through a `||` fallback silently restored the table
+  // BP, so report it unresolved instead of inventing a number.
   if (name === 'spit up') {
     const stockpile = attacker.stockpile || 0;
-    return 100 * stockpile;
+    return stockpile > 0 ? 100 * stockpile : UNRESOLVED_BP;
   }
 
-  // Trump Card: power based on remaining PP
+  // Trump Card: power based on remaining PP. With no PP tracking the old default
+  // of 1 remaining PP resolved to 80 — the top of the table — for a move that is
+  // at 40 for the first four uses of a battle.
   if (name === 'trump card') {
-    const pp = attacker.movePP?.trump_card || attacker.remainingPP || 1;
+    const pp = attacker.movePP?.trump_card ?? attacker.remainingPP;
+    if (pp == null) return UNRESOLVED_BP;
     if (pp >= 4) return 40;
     if (pp === 3) return 50;
     if (pp === 2) return 60;
     return 80;
   }
 
-  // Return: power based on happiness (max 102 at 255 happiness)
+  // Return / Frustration: happiness × 10 / 25, capped at 102.
+  //
+  // This was `(255 * happiness) / 25` — the 255 belongs in the happiness value,
+  // not the numerator. At default happiness it resolved Return to floor(65025/25)
+  // = 2601 BP, twenty-five times the move's actual maximum. Nothing in Reg M-B
+  // runs Return, which is the only reason it never surfaced; it sat in a shared
+  // path where one reachable call would have produced nonsense.
+  //
+  // The defaults are the competitive ones: nobody runs Return on an unhappy
+  // Pokemon or Frustration on a happy one, so each assumes its own best case.
   if (name === 'return') {
-    const happiness = attacker.happiness || 255;
-    return Math.floor((255 * happiness) / 25);
+    const happiness = attacker.happiness != null ? attacker.happiness : 255;
+    return Math.max(1, Math.min(102, Math.floor((happiness * 10) / 25)));
   }
-
-  // Frustration: power based on (255 - happiness)
   if (name === 'frustration') {
-    const happiness = attacker.happiness || 255;
-    return Math.floor((255 * (255 - happiness)) / 25);
+    const happiness = attacker.happiness != null ? attacker.happiness : 0;
+    return Math.max(1, Math.min(102, Math.floor(((255 - happiness) * 10) / 25)));
   }
 
-  // Natural Gift: varies by Berry — assume base 60 if no Berry, else 80 (simplified)
+  // Natural Gift: power AND type both come from the held Berry. Without a Berry
+  // table this cannot be resolved, and the old flat 60 also left the move's type
+  // wrong, which is the larger error of the two.
   if (name === 'natural gift') {
-    const berryPower = attacker.naturalGiftPower || 60;
-    return berryPower;
+    return attacker.naturalGiftPower || UNRESOLVED_BP;
   }
 
   // Double Iron Bash: 60 BP × 2 hits (handled by hit count, not BP)
@@ -780,8 +946,14 @@ function calcSingleMove(attacker, defender, move, field) {
   const sbBP = sbInfo ? sbInfo.bp : actualBP;
 
   // Resolve variable base power moves (Last Respects, Gyro Ball, Stored Power, etc.)
+  //
+  // `??`, not `||`. With `||` any legitimate 0 fell back to the table BP, which
+  // is how Spit Up and Frustration silently reverted. UNRESOLVED_BP is passed
+  // through to the result so the caller can refuse to print the number rather
+  // than receiving a plausible-looking one.
   const varBP = resolveVariableBP(move, attacker, defender);
-  const finalBP = varBP || sbBP;
+  const bpUnresolved = varBP === UNRESOLVED_BP;
+  const finalBP = bpUnresolved ? sbBP : (varBP ?? sbBP);
 
   // Get attacker's offensive stat and defender's defensive stat
   const isPhysical = isPhysicalCategory(move);
@@ -798,6 +970,23 @@ function calcSingleMove(attacker, defender, move, field) {
 
   // Gen 9 Sand Special Defense boost: Rock-type Pokemon get 1.5x SpD in Sand
   if (wLower === 'sand' && !isPhysical && defender.types && defender.types.includes('Rock')) {
+    defenseStat = Math.floor(defenseStat * 1.5);
+  }
+
+  // --- Defensive item stat boosts ---------------------------------------------
+  // Applied to the STAT, not to final damage. Dividing damage by 1.5 is only
+  // approximately equivalent to multiplying the defensive stat by 1.5, because
+  // of the floor() steps in the formula — and this project's threshold system
+  // turns on exact KO boundaries, where a one-point difference flips a tier.
+  //
+  // Before this block the ONLY defensive item the calculator understood was
+  // Utility Umbrella, so every Assault Vest / Eviolite holder was calculated
+  // as though it held nothing.
+  const defItemName = defender.item || '';
+  if (defItemName === 'Assault Vest' && !isPhysical) {
+    defenseStat = Math.floor(defenseStat * 1.5);
+  }
+  if (defItemName === 'Eviolite') {
     defenseStat = Math.floor(defenseStat * 1.5);
   }
 
@@ -844,6 +1033,11 @@ function calcSingleMove(attacker, defender, move, field) {
     maxDamage,
     minPercent: Math.round(minPercent * 10) / 10,
     maxPercent: Math.round(maxPercent * 10) / 10,
+    // True when this move's real base power depends on state we do not have.
+    // The damage numbers above are still returned (they are the table-BP result)
+    // but a caller must not present them as this move's damage.
+    bp_unresolved: bpUnresolved,
+    base_power_used: finalBP,
   };
 }
 
@@ -905,6 +1099,16 @@ function CalcDamage(opts) {
   };
 
   // Build attacker/defender with stats
+  // NOTE ON THE FIELD LIST BELOW — this is the chokepoint that broke the whole
+  // variable-BP system. These two objects are rebuilt from scratch and are the
+  // ONLY thing resolveVariableBP ever sees. Every field it reads that was not
+  // copied here was structurally unreachable: a caller could set `faintedCount`,
+  // `boosts` or `weight` perfectly and the value would be dropped one frame
+  // before the code that wanted it. That is why Last Respects sat at its 50 BP
+  // floor in every line of output despite being implemented correctly.
+  //
+  // Anything resolveVariableBP reads must be copied here. Adding a field to that
+  // function without adding it here is a silent no-op.
   const attackerFull = {
     name: attacker.name,
     ability: attacker.ability || '',
@@ -913,6 +1117,17 @@ function CalcDamage(opts) {
     types: attackerTypes,
     status: attacker.status || '',
     hpFraction: attacker.hpFraction !== undefined ? attacker.hpFraction : 1,
+    weight: attacker.weight,
+    boosts: attacker.boosts,
+    hp: attacker.hp,
+    maxHP: attacker.maxHP,
+    side: attacker.side,
+    timesHit: attacker.timesHit,
+    happiness: attacker.happiness,
+    stockpile: attacker.stockpile,
+    movePP: attacker.movePP,
+    remainingPP: attacker.remainingPP,
+    naturalGiftPower: attacker.naturalGiftPower,
   };
 
   const defenderFull = {
@@ -924,17 +1139,45 @@ function CalcDamage(opts) {
     status: defender.status || '',
     isFullHP: defender.isFullHP !== undefined ? defender.isFullHP : true,
     isFriendGuard: defender.isFriendGuard || false,
+    weight: defender.weight,
+    boosts: defender.boosts,
+    hp: defender.hp,
+    maxHP: defender.maxHP,
+    hpFraction: defender.hpFraction,
   };
 
   // Run calculation
   const result = calcSingleMove(attackerFull, defenderFull, moveObj, field);
 
-  const minPercent = result.minPercent;
-  const maxPercent = result.maxPercent;
+  let minPercent = result.minPercent;
+  let maxPercent = result.maxPercent;
   const maxHP = defenderStats.hp;
 
+  // --- Focus Sash --------------------------------------------------------------
+  // Not a damage modifier: a guarantee that a single hit from full HP cannot KO.
+  // It was not modelled at all, so a Sash holder was reported as OHKO'd and any
+  // "this item makes it survive" reasoning about it was incoherent.
+  //
+  // The reported percentages are CAPPED below 100 when the Sash applies, because
+  // every consumer in this codebase asks "is min >= 100" to decide OHKO. Capping
+  // makes all of them correct without each having to know about the item; the
+  // uncapped figures stay available as raw_min_percent / raw_max_percent.
+  const sashApplies = (defender.item || '') === 'Focus Sash'
+    && defender.isFullHP !== false
+    && Math.round(result.minDamage) >= maxHP;
+  const rawMinPercent = minPercent;
+  const rawMaxPercent = maxPercent;
+  let effectiveMinDamage = Math.round(result.minDamage);
+  let effectiveMaxDamage = Math.round(result.maxDamage);
+  if (sashApplies) {
+    effectiveMinDamage = maxHP - 1;
+    effectiveMaxDamage = maxHP - 1;
+    minPercent = Math.round(((maxHP - 1) / maxHP) * 1000) / 10;
+    maxPercent = minPercent;
+  }
+
   // Build KO tier
-  const koTier = getGuaranteedKOTier(Math.round(result.minDamage), Math.round(result.maxDamage), maxHP);
+  const koTier = getGuaranteedKOTier(effectiveMinDamage, effectiveMaxDamage, maxHP);
 
   // Build notes string matching Nerd of Now format
   const abilityNote = attacker.ability ? attacker.ability + ' ' : '';
@@ -946,10 +1189,19 @@ function CalcDamage(opts) {
   return {
     minPercent,
     maxPercent,
-    minDamage: Math.round(result.minDamage),
-    maxDamage: Math.round(result.maxDamage),
+    minDamage: effectiveMinDamage,
+    maxDamage: effectiveMaxDamage,
     guaranteed_ko: koTier,
     notes,
+    // Variable-BP disclosure — see UNRESOLVED_BP.
+    bp_unresolved: result.bp_unresolved === true,
+    base_power_used: result.base_power_used,
+    // Focus Sash disclosure: what the hit would have done without it.
+    sash_prevents_ohko: sashApplies,
+    raw_min_percent: rawMinPercent,
+    raw_max_percent: rawMaxPercent,
+    raw_min_damage: Math.round(result.minDamage),
+    raw_max_damage: Math.round(result.maxDamage),
     // Raw intermediate values for debugging
     _attackerStats: attackerStats,
     _defenderStats: defenderStats,

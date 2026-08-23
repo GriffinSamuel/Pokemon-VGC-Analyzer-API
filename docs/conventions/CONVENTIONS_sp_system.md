@@ -24,7 +24,37 @@ Where alignment = 1.1 (boosted nature), 1.0 (neutral), 0.9 (hindered).
 | `SP_CAP_PER_STAT` | 32 | Maximum SP in any single stat |
 | `SP_BUDGET_TOTAL` | 66 | Sum of all 6 stats |
 
-A spread is valid if and only if every stat is in [0, 32] and the total is ≤ 66. The budget is a ceiling, not a target — unspent SP is valid when no additional breakpoints are achievable.
+A spread is valid if and only if every stat is in [0, 32] and the total is **exactly 66**.
+
+**66 is a floor as well as a ceiling.** Every point must be placed. An unspent point is strictly worse than the same point adding bulk, so leaving budget on the table is never correct. This REVERSES the earlier "the budget is a ceiling, not a target" rule.
+
+Two numbers come out of the team-build path and they are not the same:
+
+| Field | Meaning |
+|-------|---------|
+| `minimization.justified_sp` | the FLOOR — the minimum that preserves every KO tier, per stat. What the Why block attributes to named threats. |
+| `sp` | the DISPLAYED spread — always exactly 66. The difference was placed by `redistributeToBudget()`. |
+
+`thresholds_met` is recomputed against the redistributed spread, so every damage figure shown belongs to the spread actually printed.
+
+**Verified at:** `spread_optimizer.js:redistributeToBudget()`, called immediately after `minimizeSpread()` in `findOptimalSpread()`.
+
+---
+
+## Redistribution Fill Order
+
+```
+offensive roles : HP -> weaker of Def/SpD -> primary attacking stat -> stronger of Def/SpD -> Spe
+support roles   : HP -> weaker of Def/SpD -> stronger of Def/SpD -> Spe
+```
+
+"Weaker of Def/SpD" is decided on the resulting stat value at current investment, not base stats.
+
+**The offensive lock outranks the budget rule.** A locked stat is never a redistribution target and never receives padding — `ensureBudget()` takes `lockedIndices` for the same reason.
+
+**Chunk-evaluated waste rule:** test the WHOLE remaining block against a candidate stat. If the entire block produces no stat gain (the 0.9-alignment `floor()` eating it), skip that stat; if any part of it gains, place the whole block. Never evaluated per-point, so a block cannot stall half-placed inside a dead zone.
+
+A final unconditional pass places any remainder into any unlocked stat with room, so 66 is always reached. Four unlocked stats at 32 each is 128, so this can always complete.
 
 ---
 
@@ -85,15 +115,23 @@ The prior rule was `verifyResult.koCheckValue < 100`. Its counterfactual zeroes 
 
 ---
 
-## Unspendable SP
+## Allocated to Bulk
 
-SP in a stat with no qualifying threshold is classified as "unspendable" in the Why block. Every SP must be accounted for: either justified by a threshold or marked unspendable. The final line of every Why block is:
+SP beyond a stat's justified floor is **"allocated to bulk"** — never "unspendable". The point IS spent and IS adding a real stat; it simply is not what any single threshold required. The wording matters: "unspendable" described a budget that went unused, which no longer happens.
+
+Every SP is accounted for as one of the two. The final line of every Why block is:
 
 ```
-  SP: {justifiedSp} justified + {unspendableTotal} unspendable = 66 total
+  SP: {justifiedSp} justified + {bulkSp} allocated to bulk = 66 total
 ```
 
-**Verified at:** `team.js:794-798`.
+Per-stat, the bulk portion is suffixed to the line:
+
+```
+  32 HP — survives Garchomp Earthquake (Jolly 32 Atk: 84.5-99.5%) (+7 allocated to bulk)
+```
+
+**Verified at:** `team.js:buildSpAllocationWhy()`.
 
 ---
 

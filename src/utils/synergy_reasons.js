@@ -141,10 +141,16 @@ function typeCoverageReasons(attackerName, attackerMoves, defenderName, defender
 // own fast members last. suppressTrickRoom is computed once per team by the
 // caller (team_analyzer.js's analyzeSynergies), same fast-member threshold as
 // the move-recommendation team_context check (team.js's buildMoveTeamContext).
-function supportReasons(supporterName, supporterMoves, partnerName, suppressTrickRoom = false) {
+// suppressMoves: moves for which the CALLER already has a specific, named reason
+// for this exact pair (e.g. team_analyzer's buildWideGuardSynergies naming the
+// real spread move and attacker). Emitting the generic "blocks spread moves...,
+// supporting X" line alongside the specific one is strictly worse than the
+// specific one alone, so the caller suppresses it rather than printing both.
+function supportReasons(supporterName, supporterMoves, partnerName, suppressTrickRoom = false, suppressMoves = null) {
   const reasons = [];
   for (const mv of supporterMoves) {
     if (mv.move === 'Trick Room' && suppressTrickRoom) continue;
+    if (suppressMoves && suppressMoves.has(mv.move)) continue;
     const effect = SUPPORT_MOVE_EFFECTS[mv.move];
     if (effect) reasons.push(`${supporterName}'s ${mv.move} ${effect}, supporting ${partnerName}`);
   }
@@ -174,16 +180,28 @@ const ABILITY_MOVE_SYNERGIES = {
   'Flare Boost': { move: 'Hex', reason: 'Flare Boost grants 1.5x SpA when burned, and Hex becomes 130 BP vs statused targets — powerful special attacker' },
   // Marvel Scale: 1.5x Def when statused → works with tank moves
   'Marvel Scale': { move: 'Rest', reason: 'Marvel Scale boosts Defense when statused — Rest enables sustained bulk' },
-  // Solar Power: 1.5x SpA in Sun → Solar Beam (no charge in Sun)
+  // Solar Power: 1.5x SpA in Sun → Solar Beam (no charge in Sun). Kept because
+  // the ability itself changes this move's damage — the two genuinely compound.
   'Solar Power': { move: 'Solar Beam', reason: 'Solar Power boosts SpA by 1.5x in Sun, and Solar Beam charges instantly in Sun — free 120 BP STAB' },
-  // Chlorophyll: 2x Speed in Sun → Solar Beam (no charge)
-  'Chlorophyll': { move: 'Solar Beam', reason: 'Chlorophyll doubles Speed in Sun, and Solar Beam charges instantly — free 120 BP STAB' },
-  // Swift Swim: 2x Speed in Rain → Rain-boosted Water moves
-  'Swift Swim': { move: 'Hydro Pump', reason: 'Swift Swim doubles Speed in Rain, enabling fast Rain-boosted Water attacks' },
-  // Sand Rush: 2x Speed in Sand → Ground/Rock moves
-  'Sand Rush': { move: 'Earthquake', reason: 'Sand Rush doubles Speed in Sand — outspeeds most threats while hitting hard' },
-  // Slush Rush: 2x Speed in Hail → Ice moves
-  'Slush Rush': { move: 'Blizzard', reason: 'Slush Rush doubles Speed in Hail, and Blizzard gets perfect accuracy — free 110 BP STAB' },
+  //
+  // REMOVED: Chlorophyll -> Solar Beam, Swift Swim -> Hydro Pump,
+  // Sand Rush -> Earthquake, Slush Rush -> Blizzard.
+  //
+  // These four are weather-speed abilities, and none of them interacts with the
+  // move it was paired with. Chlorophyll doubles Speed in Sun; Solar Beam skips
+  // its charge turn in Sun. Both are consequences of Sun — neither causes the
+  // other, and the ability has no effect whatsoever on the move. Claiming
+  // "Chlorophyll synergizes with Solar Beam" states a relationship that does not
+  // exist. Sand Rush -> Earthquake was worse still: Sand does not boost Ground
+  // moves at all, so the pairing had no mechanical basis in either direction.
+  //
+  // The real, correct statements are already produced elsewhere and do not need
+  // a second inaccurate copy here: abilitySynergyReasons() emits "Drought sets
+  // Sun, activating Chlorophyll to double X's Speed" (the ability's actual
+  // effect), and moveWeatherReasons() emits "Sun lets X use Solar Beam without a
+  // charge turn" via WEATHER_MOVE_RULES.chargeRemoval (the move's actual
+  // effect). Together those two lines say everything true about the pairing,
+  // once each.
   // Iron Fist: 1.2x power on punching moves → Drain Punch, Mach Punch
   'Iron Fist': { move: 'Drain Punch', reason: 'Iron Fist boosts punching moves by 1.2x — Drain Punch gets STAB + healing + 1.2x power' },
   // Strong Jaw: 1.5x power on biting moves → Crunch, Psychic Fangs
@@ -241,9 +259,25 @@ function abilityMoveSynergies(pokemonName, ability, pokemonMoves, partnerName, p
   return reasons;
 }
 
-function generateSynergyReasons({ pokemonName, pokemonRow, pokemonMoves, partnerName, partnerRow, partnerMoves, abilityRules, score, suppressTrickRoom }) {
-  const pokemonAbilities = [pokemonRow.ability1, pokemonRow.ability2, pokemonRow.ability_hidden].filter(Boolean);
-  const partnerAbilities = [partnerRow.ability1, partnerRow.ability2, partnerRow.ability_hidden].filter(Boolean);
+// pokemonAbility/partnerAbility: the ability this build ACTUALLY RUNS, as
+// resolved upstream and printed in the "Ability:" line of the build output.
+//
+// Without them this function fell back to the species' entire legal ability pool
+// (ability1 + ability2 + hidden) and treated every one of them as active at
+// once. Whimsicott can legally run Chlorophyll, so a Drought partner produced
+// "Drought sets Sun, activating Chlorophyll to double Whimsicott's Speed" even
+// though the build runs Prankster and gets no Speed from Sun at all. The synergy
+// section was describing a team that was never built.
+//
+// The pool is still the fallback for callers that don't supply a resolved
+// ability (older tests, direct unit calls) — same behaviour as before for them.
+function generateSynergyReasons({ pokemonName, pokemonRow, pokemonMoves, pokemonAbility, partnerName, partnerRow, partnerMoves, partnerAbility, abilityRules, score, suppressTrickRoom, suppressSupportMoves }) {
+  const pokemonAbilities = pokemonAbility
+    ? [pokemonAbility]
+    : [pokemonRow.ability1, pokemonRow.ability2, pokemonRow.ability_hidden].filter(Boolean);
+  const partnerAbilities = partnerAbility
+    ? [partnerAbility]
+    : [partnerRow.ability1, partnerRow.ability2, partnerRow.ability_hidden].filter(Boolean);
   const pokemonTypes = [pokemonRow.type1, pokemonRow.type2].filter(Boolean);
   const partnerTypes = [partnerRow.type1, partnerRow.type2].filter(Boolean);
 
@@ -257,24 +291,47 @@ function generateSynergyReasons({ pokemonName, pokemonRow, pokemonMoves, partner
     ...moveWeatherReasons(partnerAbilities, pokemonName, pokemonMoves, pokemonTypes),
     ...typeCoverageReasons(pokemonName, pokemonMoves, partnerName, partnerTypes),
     ...typeCoverageReasons(partnerName, partnerMoves, pokemonName, pokemonTypes),
-    ...supportReasons(pokemonName, pokemonMoves, partnerName, suppressTrickRoom),
-    ...supportReasons(partnerName, partnerMoves, pokemonName, suppressTrickRoom),
+    ...supportReasons(pokemonName, pokemonMoves, partnerName, suppressTrickRoom, suppressSupportMoves),
+    ...supportReasons(partnerName, partnerMoves, pokemonName, suppressTrickRoom, suppressSupportMoves),
     ...pokemonAbilities.flatMap(ab => abilityMoveSynergies(pokemonName, ab, pokemonMoves, partnerName, partnerMoves)),
     ...partnerAbilities.flatMap(ab => abilityMoveSynergies(partnerName, ab, partnerMoves, pokemonName, pokemonMoves)),
   ];
 
-  // FIX 2: deduplicate synergy reasons — exact match via Set, then
-  // fuzzy deduplication that removes entries where one reason is a
-  // substring of another (catches near-identical Solar Beam/Sun reasons)
+  // Deduplicate synergy reasons in three passes, weakest to strongest:
+  //   1. exact match via Set
+  //   2. substring containment (one reason wholly inside another)
+  //   3. shared explanation tail — everything from the first em dash onward.
+  //
+  // Pass 3 is the one that matters. Reasons are built as "<context> — <mechanic>"
+  // and two different contexts can carry an identical mechanic, e.g.
+  //   "Venusaur's Chlorophyll synergizes with Charizard's Solar Beam — <M>"
+  //   "Consider adding Solar Beam to Venusaur — <M>"
+  // Neither contains the other, so passes 1 and 2 both let them through and the
+  // user reads the same sentence twice in one line. Keeping the first occurrence
+  // keeps the more specific statement, since generic "Consider adding..."
+  // suggestions are appended after the concrete ones.
   const dedupedExact = [...new Set(reasons)];
-  const deduped = dedupedExact.filter((r, i) =>
+  const dedupedSubstring = dedupedExact.filter((r, i) =>
     !dedupedExact.some((other, j) => j !== i && other.includes(r) && other.length > r.length)
   );
-  if (deduped.length > 0) return deduped.slice(0, 3);
+  const seenTails = new Set();
+  const deduped = dedupedSubstring.filter((r) => {
+    const dash = r.indexOf(' — ');
+    if (dash === -1) return true;
+    const tail = r.slice(dash + 3).trim();
+    if (seenTails.has(tail)) return false;
+    seenTails.add(tail);
+    return true;
+  });
 
-  if (score >= 1.5) return [`Strong co-occurrence in tournament play (score: ${score.toFixed(2)})`];
-  if (score <= 0.5) return [`Rarely paired in tournament play — likely redundant roles or competing resources (score: ${score.toFixed(2)})`];
-  return [`Occasionally paired in tournament play (score: ${score.toFixed(2)})`];
+  // No score-only fallback. Co-occurrence is a statistical observation that two
+  // Pokemon appear on the same teams — it is not a mechanical reason they work
+  // together, and presenting it under "Strong synergies" implies a causal
+  // relationship the data does not support (it cannot distinguish genuine
+  // synergy from two independently strong Pokemon both being popular). A pair
+  // with no mechanical reason now returns an empty list, and the caller drops it
+  // from the synergy list entirely rather than padding it with a score.
+  return deduped.slice(0, 3);
 }
 
 module.exports = { generateSynergyReasons };

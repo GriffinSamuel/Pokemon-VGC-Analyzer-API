@@ -714,6 +714,301 @@ Careful Nature
     assert(!mentionsTrickRoom, `Expected no Trick Room synergy reason for a 3+-fast-member team, got: ${JSON.stringify(body.team_analysis.synergies.map((s) => s.reasons))}`);
   });
 
+  // --- Coverage gaps are per-Pokemon, not per-type ---
+  // The default team has no move that is super effective against pure Normal,
+  // but Farigiraf is Normal/Psychic and Pyroar-Mega is Normal/Dark — both are
+  // hit super effectively through their SECOND type, so neither is a real gap.
+  // Maushold (pure Normal) is. The old type-level check listed all three.
+  await test('POST /api/team/build: coverage gaps name only Pokemon with no super effective answer across their full typing', async () => {
+    const body = await getTeamBuildResult();
+    const gaps = body.team_analysis.coverage.coverage_gaps;
+    assert(Array.isArray(gaps), 'Expected coverage_gaps to be an array');
+    for (const gap of gaps) {
+      assert(gap.pokemon && Array.isArray(gap.types) && gap.types.length > 0,
+        `Every gap must name a Pokemon and its typing, got: ${JSON.stringify(gap)}`);
+      assert(gap.best_effectiveness < 2,
+        `${gap.pokemon} (${gap.types.join('/')}) is listed as a gap but the team hits it for ${gap.best_effectiveness}x`);
+    }
+    // Deliberately NOT asserting that any specific Pokemon is or isn't a gap.
+    // Doing so would hardcode a typing into the test, and typings in this format
+    // come from the `pokemon` table, not from official-game knowledge — several
+    // Megas here (Pyroar-Mega, Floette-Eternal-Mega, Staraptor-Mega,
+    // Froslass-Mega) do not exist in the official games at all, so there is no
+    // external source of truth to check a hardcoded typing against.
+    //
+    // The invariant below is the one that actually belongs to this code, and it
+    // is checked against whatever typing the DB reports rather than against an
+    // assumed one: a Pokemon is listed as a gap ONLY IF nothing on the team is
+    // super effective across its FULL type combination. That is exactly the bug
+    // the per-type check had, and it holds for any roster and any type chart.
+    const dualTypedGaps = gaps.filter((g) => g.types.length === 2);
+    for (const gap of dualTypedGaps) {
+      for (const t of gap.types) {
+        assert(gap.best_effectiveness < 2,
+          `${gap.pokemon} is listed as a gap, but its ${t} half is hit for ${gap.best_effectiveness}x`);
+      }
+    }
+  });
+
+  // --- Key threat speeds must be reachable under the SP system ---
+  // The old archetype table carried one hardcoded key_threat_speed per archetype
+  // and printed it against whichever threat was listed first, which is how
+  // "Charizard-Mega-Y (~185 effective Speed)" appeared — 185 described a
+  // Chlorophyll sweeper, and Charizard-Mega-Y's ceiling is
+  // floor((100 + 32 + 20) x 1.1) = 167.
+  await test('POST /api/team/build: no key threat is reported above its maximum possible Speed', async () => {
+    const body = await getTeamBuildResult();
+    const SPEED_DOUBLERS = new Set(['chlorophyll', 'swift swim', 'sand rush', 'slush rush', 'unburden', 'quick feet']);
+    for (const m of body.archetype_matchups) {
+      for (const t of m.key_threats || []) {
+        if (t.speed == null || t.base_speed == null) continue;
+        const ceiling = Math.floor((t.base_speed + 32 + 20) * 1.1);
+        const doubles = SPEED_DOUBLERS.has(String(t.ability || '').toLowerCase());
+        const allowed = doubles ? ceiling * 2 : ceiling;
+        assert(t.speed <= allowed,
+          `${m.archetype}: ${t.pokemon} reported at ${t.speed} Spe, but base ${t.base_speed} caps at ${allowed}${doubles ? ' (ability-doubled)' : ''}`);
+      }
+    }
+  });
+
+  // --- Best Team Set brings exactly one Mega ---
+  // Only one Mega can be brought to a battle, so Megas are graded in their own
+  // bracket and the remaining three slots are filled from non-Megas.
+  await test('POST /api/team/build: every Best Team Set is 4 Pokemon with at most one Mega', async () => {
+    const body = await getTeamBuildResult();
+    const megaOnTeam = body.team.filter((m) => /-mega/i.test(m.pokemon)
+      && /ite( [xy])?$/i.test(String(m.item || '')));
+    for (const m of body.archetype_matchups) {
+      const set = m.best_team_set;
+      if (!set) continue;
+      assert(set.members.length === Math.min(4, body.team.length),
+        `${m.archetype}: Best Team Set has ${set.members.length} members`);
+      const megasInSet = set.members.filter((n) => /-mega/i.test(n));
+      assert(megasInSet.length <= 1,
+        `${m.archetype}: Best Team Set contains ${megasInSet.length} Megas — only one can be brought`);
+      if (megaOnTeam.length > 0) {
+        assert(set.mega, `${m.archetype}: team has a Mega but the set selected none`);
+        assert(set.members.includes(set.mega), `${m.archetype}: selected Mega is not in the set`);
+      }
+      assert(new Set(set.members).size === set.members.length,
+        `${m.archetype}: Best Team Set repeats a Pokemon`);
+    }
+  });
+
+  // --- Weather Ball never reported with its static Normal type ---
+  // Weather Ball is stored as Normal in the moves table; its real attacking type
+  // is only known under active weather. The damage calc resolved it correctly
+  // but every label around it read the static type, so it printed as a bare
+  // "Weather Ball" while Heat Wave beside it got "(Sun-boosted)".
+  //
+  // Weak by construction: if no Weather Ball OHKO lands in the top-20 display
+  // slice this passes vacuously. It is here to catch the regression, not to
+  // prove the feature fires.
+  await test('POST /api/team/build: Weather Ball is never reported without its resolved type', async () => {
+    const body = await getTeamBuildResult();
+    const entries = body.matchup_analysis.ohko_opportunities.filter((o) => o.move === 'Weather Ball');
+    for (const o of entries) {
+      assert(/-type/.test(o.move_condition || ''),
+        `Weather Ball reported with no resolved type — move_condition was ${JSON.stringify(o.move_condition)}`);
+    }
+  });
+
+  // --- A weather setter's own Weather Ball uses ITS weather ---
+  // On a two-setter team the old code resolved Weather Ball once for everyone by
+  // taking the first weather out of a Set, so the Drizzle user's Weather Ball
+  // came out Fire. A member with its own weather ability always plays under it.
+  await test('POST /api/team/build: a weather setter\'s Weather Ball resolves to its own weather', async () => {
+    const body = await getTeamBuildResult();
+    const OWN = { Drizzle: 'Water', Drought: 'Fire', 'Sand Stream': 'Rock', 'Snow Warning': 'Ice' };
+    for (const m of body.team) {
+      const ability = String(m.ability || '').replace(/\s*\(base:.*\)$/, '').trim();
+      const expected = OWN[ability];
+      if (!expected) continue;
+      const wb = (m.moves || []).find((mv) => mv.move === 'Weather Ball');
+      if (!wb) continue;
+      const note = wb.team_context || '';
+      assert(note.includes(`${expected}-type`),
+        `${m.pokemon} has ${ability} so its Weather Ball must be ${expected}-type, got: "${note}"`);
+    }
+  });
+
+  // --- Mega members get their full weakness list ---
+  // The critical list only fires at 3+ shared members, so a type hitting only
+  // the Mega was never mentioned — despite the Mega being unreplaceable.
+  await test('POST /api/team/build: every Mega member has its weaknesses listed in full', async () => {
+    const body = await getTeamBuildResult();
+    const megas = body.team.filter((m) => m.pokemon.toLowerCase().includes('-mega'));
+    const listed = body.weaknesses.mega_weaknesses || [];
+    assert(listed.length === megas.length,
+      `Expected ${megas.length} Mega weakness entries, got ${listed.length}`);
+    for (const mw of listed) {
+      assert(Array.isArray(mw.weak_to) && mw.weak_to.length > 0, `${mw.pokemon} has no weaknesses listed`);
+      for (const t of mw.weak_to) {
+        assert(t.multiplier >= 2, `${mw.pokemon}: ${t.type} listed at ${t.multiplier}x — not a weakness`);
+        assert(Array.isArray(t.shared_with_team), `${mw.pokemon}: ${t.type} has no shared_with_team array`);
+        assert(!t.shared_with_team.includes(mw.pokemon), `${mw.pokemon} is listed as sharing its own weakness`);
+      }
+      // Sorted heaviest-first.
+      const mults = mw.weak_to.map((t) => t.multiplier);
+      assert(mults.every((v, i) => i === 0 || mults[i - 1] >= v),
+        `${mw.pokemon} weaknesses are not ordered by multiplier: ${mults.join(', ')}`);
+    }
+  });
+
+  // --- Exploiters are found by the moves they run, not only by their typing ---
+  // Garchomp is Dragon/Ground and almost always carries Rock Slide, making it
+  // one of the format's most common Rock-move users — and it was invisible to
+  // the weakness section, which indexed Pokemon by species typing.
+  await test('POST /api/team/build: every listed exploiter cites the move it threatens with', async () => {
+    const body = await getTeamBuildResult();
+    for (const w of body.weaknesses.critical) {
+      for (const e of w.exploited_by) {
+        assert(typeof e.pokemon === 'string' && e.pokemon.length > 0, 'An exploiter entry names no Pokemon');
+        if (e.move) {
+          assert(typeof e.stab === 'boolean', `${e.pokemon} names ${e.move} but carries no stab flag`);
+          assert(String(e.note || '').includes(e.move), `${e.pokemon}'s note does not mention ${e.move}`);
+        } else {
+          // The only acceptable moveless exploiter is the disclosed fallback.
+          assert(/no move data available/.test(e.note || ''),
+            `${e.pokemon} is listed as a ${w.type} threat with neither a move nor a no-data disclaimer`);
+        }
+      }
+    }
+  });
+
+  // --- Weakness mitigation covers offence, not just resistances ---
+  // A shared weakness can be answered three ways: absorb it (resist/immunity),
+  // trade with it (super effective move), or remove it (OHKO on a common
+  // attacker of that type). The old line reported only the first, so a team that
+  // beat those threats offensively read as having no answer at all.
+  //
+  // Every assertion below is structural — no Pokemon, type, or damage figure is
+  // hardcoded, so this holds for any roster and any state of the usage data.
+  await test('POST /api/team/build: weakness mitigation reports offensive answers, and every claim is attributable', async () => {
+    const body = await getTeamBuildResult();
+    const teamNames = new Set(body.team.map((m) => m.pokemon));
+    const critical = body.weaknesses.critical;
+    assert(Array.isArray(critical), 'Expected weaknesses.critical to be an array');
+
+    for (const w of critical) {
+      assert(w.mitigation_detail, `${w.type} weakness has no mitigation_detail`);
+      const { resists, super_effective: se, ohko } = w.mitigation_detail;
+      for (const key of [resists, se, ohko]) {
+        assert(Array.isArray(key), `${w.type} mitigation_detail fields must all be arrays`);
+      }
+
+      const exploiterNames = new Set(w.exploited_by.map((e) => e.pokemon));
+
+      // An OHKO claim must name a team member as the attacker and one of the
+      // listed common attackers as the target — otherwise it is answering a
+      // threat that was never raised.
+      for (const line of ohko) {
+        const attacker = line.split(' OHKOs ')[0];
+        assert(teamNames.has(attacker), `OHKO mitigation credits "${attacker}", who is not on this team: "${line}"`);
+        assert([...exploiterNames].some((n) => line.includes(n)),
+          `OHKO mitigation names no listed exploiter of ${w.type}: "${line}"`);
+      }
+
+      // Same for super effective claims.
+      for (const line of se) {
+        assert([...teamNames].some((n) => line.startsWith(`${n}'s `)),
+          `Super effective mitigation is not attributed to a team member: "${line}"`);
+        assert([...exploiterNames].some((n) => line.includes(n)),
+          `Super effective mitigation names no listed exploiter of ${w.type}: "${line}"`);
+      }
+
+      // Resist claims must name a team member.
+      for (const line of resists) {
+        assert([...teamNames].some((n) => line.startsWith(n)),
+          `Resistance mitigation is not attributed to a team member: "${line}"`);
+      }
+    }
+  });
+
+  // --- Synergy reasons cite only the ability the build actually runs ---
+  // Whimsicott can legally run Chlorophyll, but this build runs Prankster. The
+  // old code scanned the whole legal ability pool, so a Drought partner produced
+  // "activating Chlorophyll to double Whimsicott's Speed" for a build that gets
+  // no Speed from Sun whatsoever.
+  //
+  // Asserted generically against each member's OWN reported ability rather than
+  // by hardcoding "Whimsicott runs Prankster" — no roster or DB assumption.
+  await test('POST /api/team/build: synergy reasons never cite an ability the member does not run', async () => {
+    const body = await getTeamBuildResult();
+    const runs = new Map(body.team.map((m) => [
+      m.pokemon,
+      String(m.ability || '').replace(/\s*\(base:.*\)$/, '').trim(),
+    ]));
+    // Abilities that appear by name in synergy prose come from ability_synergies
+    // rules; any ability named alongside a member must be that member's own.
+    const POOL_ONLY = ['Chlorophyll', 'Swift Swim', 'Sand Rush', 'Slush Rush', 'Drizzle', 'Drought', 'Sand Stream', 'Snow Warning', 'Prankster', 'Unburden'];
+    for (const s of body.team_analysis.synergies) {
+      for (const r of s.reasons) {
+        for (const ability of POOL_ONLY) {
+          if (!r.includes(ability)) continue;
+          const claimedBy = s.pair.filter((p) => runs.get(p) === ability);
+          assert(claimedBy.length > 0,
+            `"${r}" cites ${ability}, but neither ${s.pair.join(' nor ')} runs it (they run ${s.pair.map((p) => runs.get(p) || '?').join(', ')})`);
+        }
+      }
+    }
+  });
+
+  // --- Co-occurrence is not a synergy reason ---
+  // A pair that appears together often but does nothing mechanical for each
+  // other must be dropped from the synergy list, not padded with its score.
+  await test('POST /api/team/build: no synergy is justified by tournament co-occurrence alone', async () => {
+    const body = await getTeamBuildResult();
+    const synergies = body.team_analysis.synergies;
+    for (const s of synergies) {
+      assert(s.reasons.length > 0, `${s.pair.join(' + ')} was listed with no reasons at all`);
+      for (const r of s.reasons) {
+        assert(!/co-occurrence|paired in tournament play/i.test(r),
+          `${s.pair.join(' + ')} is justified only by co-occurrence: "${r}"`);
+      }
+    }
+  });
+
+  // --- Wide Guard names the blocked move for EVERY protected teammate ---
+  // The old code kept only the single highest-usage match across the whole team,
+  // so exactly one teammate got a named reason and everyone else fell through to
+  // the generic "blocks spread moves from hitting the whole team for a turn,
+  // supporting X" line — which names neither the move nor the threat.
+  //
+  // Deliberately NOT asserting any specific Pokemon here. Which teammate and
+  // which attacker come out on top depends on live usage data, so naming one
+  // would make this test fail on a meta shift rather than on a code regression.
+  // The invariant that actually belongs to the code is: no Wide Guard reason is
+  // ever the generic form.
+  await test('POST /api/team/build: every Wide Guard synergy names the specific move blocked', async () => {
+    const body = await getTeamBuildResult();
+    const synergies = body.team_analysis.synergies;
+    const wideGuardReasons = synergies.flatMap((s) => s.reasons.filter((r) => r.includes('Wide Guard')));
+    assert(wideGuardReasons.length > 0, 'Expected at least one Wide Guard synergy (Pelipper runs it)');
+    for (const r of wideGuardReasons) {
+      assert(r.startsWith('Wide Guard blocks '),
+        `Wide Guard reason must name the blocked move, got the generic form: "${r}"`);
+      assert(/Wide Guard blocks \S/.test(r),
+        `Wide Guard reason names no move at all: "${r}"`);
+    }
+  });
+
+  // --- No synergy reason repeats its own explanation ---
+  // "X synergizes with Solar Beam — <M>" and "Consider adding Solar Beam — <M>"
+  // share an identical tail after the em dash; neither contains the other, so
+  // the old exact+substring dedup let both through and printed <M> twice.
+  await test('POST /api/team/build: a synergy entry never states the same mechanic twice', async () => {
+    const body = await getTeamBuildResult();
+    for (const s of body.team_analysis.synergies) {
+      const tails = s.reasons
+        .map((r) => (r.includes(' — ') ? r.slice(r.indexOf(' — ') + 3).trim() : null))
+        .filter(Boolean);
+      const unique = new Set(tails);
+      assert(unique.size === tails.length,
+        `${s.pair.join(' + ')} repeats an explanation: ${JSON.stringify(s.reasons)}`);
+    }
+  });
+
   // --- Bug 1 regression: primary (binding) threshold selection is by KO-tier
   // delta (category-aware) with a damage tiebreak, NOT by contribution.
   // Venusaur's HP hosts four OHKO→2HKO survivors (all delta +1); the old
@@ -818,12 +1113,15 @@ Careful Nature
     assert(rainAlt.weighted_damage_max < 70, `Expected Rain alt to be halved (<70%), got ${rainAlt.weighted_damage_max}`);
   });
 
-  // --- Part 2 regression: the displayed spread must BE the minimized
-  // (load-bearing) floor, not a padded pre-minimization spread with a separate
-  // "minimization" side-channel. "Budget is a ceiling, not a target" (CLAUDE.md)
-  // — a stat with no threshold requiring it must show 0 slack, matching
-  // minimization.justified_sp exactly, for every team member (not just one).
-  await test('POST /api/team/build: displayed sp has no removable slack (matches minimized floor)', async () => {
+  // --- SP budget: 66 is a FLOOR as well as a ceiling. Every member spends all
+  // 66; the minimization floor is reported separately as justified_sp and must
+  // never exceed the displayed spread.
+  //
+  // This REPLACES the earlier "sp === justified_sp" assertion, which encoded the
+  // opposite policy ("budget is a ceiling, not a target") and was in any case
+  // vacuous — spread_optimizer assigned the same object to both fields, so it
+  // could not fail.
+  await test('POST /api/team/build: every member spends exactly 66 SP, with justified_sp as the floor', async () => {
     const res = await fetch(`${BASE_URL}/api/team/build`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -831,14 +1129,42 @@ Careful Nature
     });
     const body = await res.json();
     assert(res.status === 200, `Expected 200, got ${res.status}`);
+    const STATS = ['hp', 'atk', 'def', 'spa', 'spd', 'spe'];
     for (const m of body.team) {
+      const total = STATS.reduce((s, k) => s + (m.sp[k] || 0), 0);
+      assert(total === 66, `${m.pokemon} spends ${total} SP, expected exactly 66 — spread ${JSON.stringify(m.sp)}`);
+      for (const stat of STATS) {
+        assert((m.sp[stat] || 0) <= 32, `${m.pokemon} sp.${stat}=${m.sp[stat]} exceeds the 32 per-stat cap`);
+      }
       assert(m.minimization && m.minimization.justified_sp, `Expected minimization data for ${m.pokemon}`);
-      for (const stat of ['hp', 'atk', 'def', 'spa', 'spd', 'spe']) {
+      for (const stat of STATS) {
         const shown = m.sp[stat] || 0;
         const floor = m.minimization.justified_sp[stat] || 0;
-        assert(shown === floor, `${m.pokemon} sp.${stat}=${shown} has removable slack — minimized floor is ${floor}`);
+        assert(floor <= shown, `${m.pokemon} justified floor sp.${stat}=${floor} exceeds the displayed ${shown}`);
       }
+      const floorTotal = STATS.reduce((s, k) => s + (m.minimization.justified_sp[k] || 0), 0);
+      assert(floorTotal <= 66, `${m.pokemon} justified floor totals ${floorTotal}, above the 66 budget`);
     }
+  });
+
+  // The offensive lock outranks the budget rule: filling to 66 must never place
+  // SP in a stat the role locks to zero. ensureBudget() previously took no lock
+  // set and filled in reverse stat order (Spe, SpD, SpA, ...), so a support
+  // member could be handed SpA on the way to 66.
+  await test('POST /api/team/build: filling to 66 never breaks the offensive lock', async () => {
+    const res = await fetch(`${BASE_URL}/api/team/build`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ team: ['Charizard-Mega-Y', 'Venusaur', 'Whimsicott', 'Kingambit', 'Archaludon', 'Pelipper'] }),
+    });
+    const body = await res.json();
+    assert(res.status === 200, `Expected 200, got ${res.status}`);
+    const arch = body.team.find((m) => m.pokemon === 'Archaludon');
+    const king = body.team.find((m) => m.pokemon === 'Kingambit');
+    const pelipper = body.team.find((m) => m.pokemon === 'Pelipper');
+    assert(arch.sp.atk === 0, `Archaludon (SpA > Atk) should have 0 Atk SP after filling to 66, got ${arch.sp.atk}`);
+    assert(king.sp.spa === 0, `Kingambit (Atk > SpA) should have 0 SpA SP after filling to 66, got ${king.sp.spa}`);
+    assert(pelipper.sp.atk === 0 && pelipper.sp.spa === 0, `Pelipper (slow_bulky_support) should have 0 Atk and 0 SpA after filling to 66, got atk=${pelipper.sp.atk} spa=${pelipper.sp.spa}`);
   });
 
   // --- Part 3 regression: every speed threshold must cite a non-null,

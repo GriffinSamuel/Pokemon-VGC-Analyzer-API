@@ -135,7 +135,23 @@ async function getTypeMetaData() {
     }
   }
 
-  return { prevalence, byType, species_prevalence };
+  // species: the same top-usage rows, but carrying each Pokemon's FULL typing so
+  // coverage can be judged against the real defender rather than a hypothetical
+  // pure-X one. Farigiraf is Normal/Psychic and Pyroar-Mega is Normal/Dark — a
+  // team with no Normal-effective move still hits both super effectively through
+  // their second type, so a type-level gap check reports them as threats the
+  // team cannot touch when in fact it can. Only a species with NO super-effective
+  // answer across its whole type combination is a genuine coverage hole.
+  const species = rows
+    .map((row) => ({
+      name: row.name,
+      types: [row.type1, row.type2].filter(Boolean),
+      usage: parseFloat(row.usage_percent) / 100,
+    }))
+    .filter((s) => s.types.length > 0)
+    .sort((a, b) => b.usage - a.usage);
+
+  return { prevalence, byType, species_prevalence, species };
 }
 
 // --- COVERAGE ANALYSIS ------------------------------------------------------------
@@ -147,89 +163,128 @@ async function getTypeMetaData() {
 // Same fixed mapping as synergy_reasons.js's WEATHER_BALL_TYPES.
 const WEATHER_BALL_TYPES = { Rain: 'Water', Sun: 'Fire', Sand: 'Rock', Snow: 'Ice' };
 
-function effectiveMoveType(mv, teamWeatherSet) {
-  if (mv.move === 'Weather Ball' && teamWeatherSet) {
-    for (const weather of teamWeatherSet) {
-      if (WEATHER_BALL_TYPES[weather]) return WEATHER_BALL_TYPES[weather];
-    }
+// NOTE: the former effectiveMoveType(mv, teamWeatherSet) has been removed. It
+// resolved Weather Ball by walking the team's weather SET and taking the first
+// entry, which silently picked one weather for the whole team — the bug that
+// made Pelipper's Weather Ball read as Fire on a Drought+Drizzle team. Every
+// caller now resolves per member via weatherForMember() + resolveMoveType().
+
+// Resolves a move's real attacking type under ONE known active weather.
+function resolveMoveType(mv, activeWeather) {
+  if (mv.move === 'Weather Ball' && activeWeather && WEATHER_BALL_TYPES[activeWeather]) {
+    return WEATHER_BALL_TYPES[activeWeather];
   }
   return mv.type;
 }
 
+// The weather THIS member plays under.
+//
+// A member that sets its own weather always plays under it — Pelipper's Drizzle
+// means Pelipper's Weather Ball is Water, no matter what else is on the team.
+// Picking one team-wide default and applying it to everyone is wrong the moment
+// a team runs two setters: this team has Drought on Charizard-Mega-Y and Drizzle
+// on Pelipper, and collapsing that to a single value made Pelipper's Weather
+// Ball Fire — a move Pelipper will essentially never fire off as Fire, since its
+// own ability overwrites the weather the turn it switches in.
+//
+// Non-setters genuinely are ambiguous on a dual-weather team; they fall back to
+// the team default, and the caller discloses which weather it assumed.
+function weatherForMember(member, fallbackWeather) {
+  for (const ability of (member && member.ability ? [member.ability] : abilitiesOf(member?.pokemonRow || {}))) {
+    if (WEATHER_SETTERS[ability]) return WEATHER_SETTERS[ability];
+  }
+  return fallbackWeather || null;
+}
+
+// First weather in a team weather set, as a plain string. Iteration order is
+// team order, so this is "the first setter on the team".
+function primaryWeatherOf(teamWeatherSet) {
+  if (!teamWeatherSet) return null;
+  for (const weather of teamWeatherSet) {
+    if (WEATHER_BALL_TYPES[weather]) return weather;
+  }
+  return null;
+}
+
+// Weather effects that are NOT damage boosts. Kept separate from the 1.5x
+// type-damage rule so neither gets described as the other.
+const SUN_CHARGE_FREE = new Set(['solar beam', 'solar blade']);
+const RAIN_ALWAYS_HITS = new Set(['thunder', 'hurricane']);
+const SNOW_ALWAYS_HITS = new Set(['blizzard']);
+
 function analyzeCoverage(team, typeMetaData, teamWeatherSet) {
+  const teamDefaultWeather = primaryWeatherOf(teamWeatherSet);
+  // Resolved per member, not once for the whole team — see weatherForMember().
+  const typeOfMove = (member, mv) => resolveMoveType(mv, weatherForMember(member, teamDefaultWeather));
+
   const covered = new Set();
   for (const type of ALL_TYPES) {
     for (const member of team) {
       const hasSuperEffective = (member.moves || []).some((mv) => {
         if (!mv.power || !mv.type) return false;
-        const effectiveType = effectiveMoveType(mv, teamWeatherSet);
-        return effectivenessAgainst(effectiveType, [type]) >= 2;
+        return effectivenessAgainst(typeOfMove(member, mv), [type]) >= 2;
       });
       if (hasSuperEffective) { covered.add(type); break; }
     }
   }
 
-  const coverageGaps = ALL_TYPES
-    .filter((type) => !covered.has(type))
-    .map((type) => {
-      const byTypeSpecies = (typeMetaData.byType[type] || []).slice(0, 3);
-      const speciesWithPrev = byTypeSpecies.map((p) => ({
-        name: p.name,
-        prevalence: typeMetaData.species_prevalence?.[p.name.toLowerCase()] || 0,
-      }));
-      const prevalence = speciesWithPrev.length > 0 ? Math.max(...speciesWithPrev.map(e => e.prevalence)) : 0;
-      const prevalenceNote = speciesWithPrev.filter(e => e.prevalence > 0).map(e => `${e.name} ${(e.prevalence * 100).toFixed(1)}%`).join(', ');
-      const exampleNames = byTypeSpecies.map((p) => p.name);
-      let note = exampleNames.length > 0
-        ? `No super effective moves against ${type} — ${exampleNames.join(' and ')} ${exampleNames.length > 1 ? 'are' : 'is a'} common threat${exampleNames.length > 1 ? 's' : ''}${prevalenceNote ? ` (${prevalenceNote})` : ''}`
-        : `No super effective moves against ${type}`;
+  // Gaps are reported PER SPECIES, not per type. A type-level gap ("no Normal
+  // coverage") is misleading the moment the threat is dual-typed: Farigiraf is
+  // Normal/Psychic and Pyroar-Mega is Normal/Dark, so a team carrying any Dark
+  // or Ghost or Bug move hits them super effectively despite having nothing that
+  // is super effective against pure Normal. Only a Pokemon with NO super
+  // effective answer across its ENTIRE type combination is a real hole — for the
+  // sample team that is Maushold (pure Normal) alone, not all three.
+  const teamAttackTypes = [...new Set(
+    team.flatMap((member) => (member.moves || [])
+      .filter((mv) => mv.power && mv.type)
+      .map((mv) => typeOfMove(member, mv)))
+  )];
 
-      // FIX 9: 4x weakness exposure — check if any meta Pokemon has a 4x
-      // weakness to a type the team DOES have, and note if the team can exploit it
-      const teamTypes = new Set();
-      for (const member of team) {
-        if (member.pokemonRow?.type1) teamTypes.add(member.pokemonRow.type1);
-        if (member.pokemonRow?.type2) teamTypes.add(member.pokemonRow.type2);
-      }
-      const hasCoverageFor = (targetType) => {
-        for (const member of team) {
-          for (const mv of (member.moves || [])) {
-            if (!mv.power || !mv.type) continue;
-            if (effectivenessAgainst(effectiveMoveType(mv, teamWeatherSet), [targetType]) >= 2) return true;
-          }
-        }
-        return false;
+  const bestEffectivenessAgainst = (types) => teamAttackTypes.reduce(
+    (best, atkType) => Math.max(best, effectivenessAgainst(atkType, types)), 0
+  );
+
+  const coverageGaps = (typeMetaData.species || [])
+    .filter((sp) => bestEffectivenessAgainst(sp.types) < 2)
+    .map((sp) => {
+      const prevalence = typeMetaData.species_prevalence?.[sp.name.toLowerCase()] ?? sp.usage ?? 0;
+      const best = bestEffectivenessAgainst(sp.types);
+      // Distinguish "we hit it neutrally" from "it actually resists everything
+      // we have" — the second is a far worse position and worth saying out loud.
+      const severity = best === 0 ? 'immune to every attacking type on this team'
+        : best < 1 ? 'resists every attacking type on this team'
+        : 'no better than neutral';
+      return {
+        pokemon: sp.name,
+        types: sp.types,
+        type: sp.types[0],
+        best_effectiveness: best,
+        meta_prevalence: prevalence,
+        note: `No super effective coverage against ${sp.name} (${sp.types.join('/')}) — ${severity}${prevalence > 0 ? `, ${(prevalence * 100).toFixed(1)}% of teams` : ''}`,
       };
-      // Check if team has a 4x super-effective type that they CAN'T exploit
-      const teamOffensiveTypes = new Set();
-      for (const member of team) {
-        for (const mv of (member.moves || [])) {
-          if (mv.power && mv.type) teamOffensiveTypes.add(effectiveMoveType(mv, teamWeatherSet));
-        }
-      }
-
-      // FIX 9: Weather dependency — if team relies on weather, flag if losing
-      // weather control makes this gap worse
-      if (teamWeatherSet && teamWeatherSet.size > 0) {
-        const weatherName = [...teamWeatherSet][0];
-        const sandNames = ['Tyranitar', 'Excadrill', 'Garchomp'];
-        const rainNames = ['Pelipper', 'Kyogre'];
-        const sunNames = ['Charizard-Mega-Y', 'Torkoal'];
-        if (weatherName === 'Rain') {
-          note += `. Tyranitar (Sand Stream) directly counters rain — losing weather removes rain boosts`;
-        } else if (weatherName === 'Sun') {
-          note += `. Tyranitar/Excadrill (Sand) counters sun — losing weather removes sun boosts and activates sand chip`;
-        }
-      }
-
-      return { type, meta_prevalence: prevalence, note };
     })
     .sort((a, b) => b.meta_prevalence - a.meta_prevalence);
+
+  // Weather dependency is a property of the TEAM, not of any one coverage gap.
+  // It used to be string-appended onto every gap note, which produced lines like
+  // "No coverage against Maushold. Tyranitar counters rain" — two unrelated
+  // claims welded together. It is now its own field the caller prints once.
+  let weatherDependencyNote = null;
+  if (teamWeatherSet && teamWeatherSet.size > 0) {
+    const weatherName = [...teamWeatherSet][0];
+    if (weatherName === 'Rain') {
+      weatherDependencyNote = 'Tyranitar (Sand Stream) directly counters rain — losing weather removes rain boosts';
+    } else if (weatherName === 'Sun') {
+      weatherDependencyNote = 'Tyranitar/Excadrill (Sand) counters sun — losing weather removes sun boosts and activates sand chip';
+    }
+  }
 
   return {
     covered_types: [...covered].sort(),
     coverage_gaps: coverageGaps,
-    every_type_covered: coverageGaps.length === 0,
+    weather_dependency_note: weatherDependencyNote,
+    every_type_covered: covered.size === ALL_TYPES.length,
   };
 }
 
@@ -263,32 +318,17 @@ function isTrickRoomViableTeam(team) {
 // specific-reason check, same as before this fix.
 async function analyzeSynergies(team, synergyScores, abilityRules, typeMetaData, movesByLower) {
   const suppressTrickRoom = !isTrickRoomViableTeam(team);
-  const strongPairs = [];
-  for (let i = 0; i < team.length; i++) {
-    for (let j = i + 1; j < team.length; j++) {
-      const a = team[i];
-      const b = team[j];
-      const score = synergyScores?.[a.pokemon.toLowerCase()]?.[b.pokemon.toLowerCase()];
-      if (score === undefined || score <= STRONG_SYNERGY_THRESHOLD) continue;
 
-      const reasons = generateSynergyReasons({
-        pokemonName: a.pokemon, pokemonRow: a.pokemonRow, pokemonMoves: a.moves,
-        partnerName: b.pokemon, partnerRow: b.pokemonRow, partnerMoves: b.moves,
-        abilityRules: abilityRules || [], score, suppressTrickRoom,
-      });
-      strongPairs.push({ pair: [a.pokemon, b.pokemon], score: round(score, 2), reasons });
-    }
-  }
-  strongPairs.sort((x, y) => y.score - x.score);
-
+  // Specific synergies are computed FIRST so the generic-reason pass below knows
+  // which pairs already have a precise, named line and can suppress the vague
+  // equivalent instead of printing both.
   const specificSynergies = [];
   if (typeMetaData) {
     const usageRows = await getTop50UsageRows();
     const teamNamesLower = new Set(team.map((m) => m.pokemon.toLowerCase()));
     const metaNamesLower = usageRows.filter((r) => !teamNamesLower.has(r.pokemon_name.toLowerCase())).map((r) => r.pokemon_name.toLowerCase());
     const { topMovesByName, movesByLower: metaMovesByLower } = await batchFetchTopMoveData(metaNamesLower, 4);
-    const wideGuard = buildWideGuardSynergy(team, typeMetaData, topMovesByName, metaMovesByLower);
-    if (wideGuard) specificSynergies.push(wideGuard);
+    specificSynergies.push(...buildWideGuardSynergies(team, typeMetaData, topMovesByName, metaMovesByLower));
   }
   if (movesByLower) {
     const ragePowder = buildRagePowderSynergy(team, movesByLower);
@@ -297,6 +337,42 @@ async function analyzeSynergies(team, synergyScores, abilityRules, typeMetaData,
   const hospitality = buildHospitalitySynergy(team);
   if (hospitality) specificSynergies.push(hospitality);
 
+  // Pairs that already carry a specific Wide Guard line, keyed both ways round
+  // since pair order here is team order but the generic pass iterates i<j.
+  const pairKey = (x, y) => [x.toLowerCase(), y.toLowerCase()].sort().join('|');
+  const wideGuardPairs = new Set(
+    specificSynergies
+      .filter((s) => s.reasons.some((r) => r.startsWith('Wide Guard blocks')))
+      .map((s) => pairKey(s.pair[0], s.pair[1]))
+  );
+
+  const strongPairs = [];
+  for (let i = 0; i < team.length; i++) {
+    for (let j = i + 1; j < team.length; j++) {
+      const a = team[i];
+      const b = team[j];
+      const score = synergyScores?.[a.pokemon.toLowerCase()]?.[b.pokemon.toLowerCase()];
+      if (score === undefined || score <= STRONG_SYNERGY_THRESHOLD) continue;
+
+      const suppressSupportMoves = wideGuardPairs.has(pairKey(a.pokemon, b.pokemon))
+        ? new Set(['Wide Guard'])
+        : null;
+
+      const reasons = generateSynergyReasons({
+        pokemonName: a.pokemon, pokemonRow: a.pokemonRow, pokemonMoves: a.moves, pokemonAbility: a.ability,
+        partnerName: b.pokemon, partnerRow: b.pokemonRow, partnerMoves: b.moves, partnerAbility: b.ability,
+        abilityRules: abilityRules || [], score, suppressTrickRoom, suppressSupportMoves,
+      });
+
+      // A pair with no mechanical reason is dropped rather than listed with a
+      // co-occurrence score standing in for an explanation. "Strong synergies"
+      // should mean the two Pokemon actually do something for each other.
+      if (reasons.length === 0) continue;
+      strongPairs.push({ pair: [a.pokemon, b.pokemon], score: round(score, 2), reasons });
+    }
+  }
+  strongPairs.sort((x, y) => y.score - x.score);
+
   return [...specificSynergies, ...strongPairs];
 }
 
@@ -304,7 +380,13 @@ async function analyzeSynergies(team, synergyScores, abilityRules, typeMetaData,
 function analyzeWeather(team) {
   const setters = [];
   for (const m of team) {
-    for (const ability of abilitiesOf(m.pokemonRow)) {
+    // Same bug class as the synergy path: scanning the whole legal ability pool
+    // credits a Pokemon with weather it does not actually set. A Politoed built
+    // with Water Absorb would still be reported as this team's Drizzle setter.
+    // Use the ability the build runs, falling back to the pool only when the
+    // caller didn't resolve one.
+    const abilities = m.ability ? [m.ability] : abilitiesOf(m.pokemonRow);
+    for (const ability of abilities) {
       const weather = WEATHER_SETTERS[ability];
       if (weather) setters.push({ pokemon: m.pokemon, ability, weather });
     }
@@ -437,7 +519,74 @@ function analyzeSpeedTiers(team, weatherAnalysis) {
 }
 
 // --- TEAM WEAKNESSES ------------------------------------------------------------------
-function analyzeWeaknesses(team, typeMetaData) {
+// teamWeatherSet / ohkoOpportunities are optional. Supplying them enables the
+// offensive half of mitigation; omitting them yields the old defence-only
+// behaviour, so existing callers and unit tests are unaffected.
+//
+// A shared weakness is not only answered by resisting it. Three teams can all be
+// weak to Fire and be in completely different positions: one has a Fire resist,
+// one can hit every common Fire attacker super effectively, one outright OHKOs
+// them. The old mitigation line reported only the first of those, so a team that
+// beats the Fire threats offensively read as having no answer at all.
+//
+// The three are reported separately rather than merged, because they are not
+// interchangeable in play — a resist buys a turn, super effective damage trades,
+// and an OHKO removes the threat.
+// Which meta Pokemon actually CARRY a move of each type — as opposed to which
+// Pokemon happen to BE that type.
+//
+// typeMetaData.byType is a typing index, so it answers "who is a Rock-type",
+// which is the wrong question. Garchomp is Dragon/Ground and almost always runs
+// Rock Slide; it is one of the most common Rock-move users in the format and was
+// invisible to the weakness section entirely. The inverse error is just as bad:
+// a Rock-type carrying no Rock move was being listed as a Rock threat purely on
+// its species typing.
+//
+// STAB is recorded but not required — it affects how hard the hit lands, not
+// whether the Pokemon can throw it.
+async function buildTypeThreatIndex(team, typeMetaData) {
+  const usageRows = await getTop50UsageRows();
+  const teamNamesLower = new Set(team.map((m) => m.pokemon.toLowerCase()));
+  const metaRows = usageRows.filter((r) => !teamNamesLower.has(r.pokemon_name.toLowerCase()));
+  const { topMovesByName, movesByLower } = await batchFetchTopMoveData(
+    metaRows.map((r) => r.pokemon_name.toLowerCase()), 4
+  );
+  const speciesTypes = new Map((typeMetaData.species || []).map((s) => [s.name.toLowerCase(), s.types]));
+
+  const byType = {};
+  for (const r of metaRows) {
+    const nameLower = r.pokemon_name.toLowerCase();
+    const usage = parseFloat(r.usage_percent) / 100;
+    const ownTypes = speciesTypes.get(nameLower) || [];
+    const seenTypes = new Set();
+    for (const entry of topMovesByName[nameLower] || []) {
+      const row = movesByLower[String(entry.move || '').toLowerCase()];
+      if (!row || !row.power || !row.type) continue;
+      // One entry per (Pokemon, type) — a mon running two Rock moves is still
+      // one Rock threat.
+      if (seenTypes.has(row.type)) continue;
+      seenTypes.add(row.type);
+      (byType[row.type] = byType[row.type] || []).push({
+        pokemon: r.pokemon_name,
+        usage,
+        move: row.name,
+        stab: ownTypes.includes(row.type),
+      });
+    }
+  }
+  for (const t of Object.keys(byType)) byType[t].sort((a, b) => b.usage - a.usage);
+  return byType;
+}
+
+async function analyzeWeaknesses(team, typeMetaData, teamWeatherSet, ohkoOpportunities = []) {
+  let threatIndex = {};
+  try {
+    threatIndex = await buildTypeThreatIndex(team, typeMetaData);
+  } catch (_err) {
+    // Move data unavailable — exploitersFor() falls back to the typing index.
+    threatIndex = {};
+  }
+
   const weakBy = {}; // type -> [pokemon names weak to it]
   const quadBy = {}; // type -> [pokemon names 4x weak to it]
 
@@ -449,26 +598,112 @@ function analyzeWeaknesses(team, typeMetaData) {
     }
   }
 
-  function mitigationFor(type) {
+  // Effectiveness is judged against each attacker's FULL typing, not against the
+  // bare weakness type — same correction the coverage-gap check needed. Fighting
+  // is 4x on Incineroar (Fire/Dark) but only 1x on a mono-Fire attacker, and a
+  // Water move is 2x on both; collapsing them to "super effective vs Fire" would
+  // lose exactly the distinction that decides which move to click.
+  const speciesTypes = new Map((typeMetaData.species || []).map((s) => [s.name.toLowerCase(), s.types]));
+
+  // ohkoOpportunities arrives already sorted by max damage descending, so the
+  // first entry per target is that target's most decisive KO.
+  const ohkoByTarget = new Map();
+  for (const o of ohkoOpportunities) {
+    const key = String(o.target || '').toLowerCase();
+    if (key && !ohkoByTarget.has(key)) ohkoByTarget.set(key, o);
+  }
+
+  const MAX_MITIGATION_ENTRIES = 3;
+
+  function defensiveAnswers(type) {
+    const immune = [];
+    const resist = [];
     for (const m of team) {
       const resistances = resistancesOf(typesOf(m.pokemonRow));
-      if (resistances[type] === 0) return `${m.pokemon} is immune to ${type} moves`;
+      if (resistances[type] === 0) immune.push(`${m.pokemon} is immune to ${type} moves`);
+      else if (resistances[type] !== undefined) resist.push(`${m.pokemon} resists ${type}`);
     }
-    for (const m of team) {
-      const resistances = resistancesOf(typesOf(m.pokemonRow));
-      if (resistances[type] !== undefined) return `${m.pokemon} resists ${type}`;
+    return [...immune, ...resist].slice(0, MAX_MITIGATION_ENTRIES);
+  }
+
+  function offensiveAnswers(exploiters) {
+    const superEffective = [];
+    const knockouts = [];
+    for (const ex of exploiters) {
+      const exKey = String(ex.pokemon || '').toLowerCase();
+      const exTypes = speciesTypes.get(exKey);
+
+      if (exTypes && exTypes.length > 0) {
+        let best = null;
+        for (const m of team) {
+          for (const mv of m.moves || []) {
+            if (!mv.power || !mv.type) continue;
+            const moveType = resolveMoveType(mv, weatherForMember(m, primaryWeatherOf(teamWeatherSet)));
+            const eff = effectivenessAgainst(moveType, exTypes);
+            if (eff < 2) continue;
+            if (!best || eff > best.eff) best = { pokemon: m.pokemon, move: mv.move, type: moveType, eff };
+          }
+        }
+        if (best) {
+          superEffective.push(`${best.pokemon}'s ${best.move} (${best.type}) hits ${ex.pokemon} for ${best.eff}x`);
+        }
+      }
+
+      const ko = ohkoByTarget.get(exKey);
+      if (ko) {
+        // Name the resolved type for any move whose type isn't inferable from
+        // its name — Weather Ball is the only such move, and "OHKOs X with
+        // Weather Ball" leaves the reader unable to tell which one it means.
+        const moveLabel = ko.move_type_is_dynamic && ko.move_type
+          ? `${ko.move} (${ko.move_type})`
+          : ko.move;
+        knockouts.push(`${ko.attacker} OHKOs ${ex.pokemon} with ${moveLabel} (${ko.damage_range})`);
+      }
     }
-    return null;
+    return {
+      super_effective: superEffective.slice(0, MAX_MITIGATION_ENTRIES),
+      ohko: knockouts.slice(0, MAX_MITIGATION_ENTRIES),
+    };
+  }
+
+  function mitigationFor(type, exploiters = []) {
+    const resists = defensiveAnswers(type);
+    const { super_effective: superEffective, ohko } = offensiveAnswers(exploiters);
+    const detail = { resists, super_effective: superEffective, ohko };
+    // Flat string kept for callers that still read `.mitigation` directly.
+    // Ordered strongest answer first: removing the threat beats trading with it,
+    // which beats absorbing a hit from it.
+    const flat = [...ohko, ...superEffective, ...resists];
+    return { detail, text: flat.length > 0 ? flat.join('; ') : null };
+  }
+
+  function exploitersFor(type, mons) {
+    const byMove = threatIndex[type] || [];
+    if (byMove.length > 0) {
+      return byMove.slice(0, 3).map((e) => ({
+        pokemon: e.pokemon,
+        usage: e.usage,
+        move: e.move,
+        stab: e.stab,
+        note: `${e.pokemon} commonly runs ${e.move}${e.stab ? ' (STAB)' : ' (coverage — not its own type)'} — threatens ${mons.join(', ')}`,
+      }));
+    }
+    // Fallback when move data is unavailable: the old typing-based list, with
+    // wording that no longer implies the Pokemon was observed running the move.
+    const byTyping = typeMetaData.byType[type] || [];
+    return byTyping.slice(0, 3).map((p) => ({
+      pokemon: p.name,
+      usage: p.usage,
+      move: null,
+      stab: true,
+      note: `Common ${type}-type Pokemon (no move data available) threatens ${mons.join(', ')}`,
+    }));
   }
 
   const critical = Object.entries(weakBy)
     .filter(([, mons]) => mons.length >= CRITICAL_WEAKNESS_THRESHOLD)
     .map(([type, mons]) => {
-      const exploiters = (typeMetaData.byType[type] || []).slice(0, 3).map((p) => ({
-        pokemon: p.name,
-        usage: p.usage,
-        note: `Common ${type}-type attacker (#${(typeMetaData.byType[type] || []).findIndex((x) => x.name === p.name) + 1} in this typing's usage) threatens ${mons.join(', ')}`,
-      }));
+      const exploiters = exploitersFor(type, mons);
       // Per-species prevalence for each weak team member: look up how common
       // that Pokemon is in the meta, rather than showing type-level prevalence.
       const memberPrevalence = {};
@@ -476,24 +711,63 @@ function analyzeWeaknesses(team, typeMetaData) {
         const key = monName.toLowerCase();
         memberPrevalence[monName] = typeMetaData.species_prevalence?.[key];
       }
+      const mit = mitigationFor(type, exploiters);
       return {
         type,
         team_members_weak: mons,
         meta_prevalence: round(typeMetaData.prevalence[type] || 0, 4),
         member_prevalence: memberPrevalence,
         exploited_by: exploiters,
-        mitigation: mitigationFor(type),
+        mitigation: mit.text,
+        mitigation_detail: mit.detail,
       };
     })
     .sort((a, b) => b.team_members_weak.length - a.team_members_weak.length);
 
-  const doubleWeaknesses = Object.entries(quadBy).map(([type, mons]) => ({
-    type,
-    team_members: mons,
-    mitigation: mitigationFor(type),
-  }));
+  const doubleWeaknesses = Object.entries(quadBy).map(([type, mons]) => {
+    const exploiters = exploitersFor(type, mons);
+    const mit = mitigationFor(type, exploiters);
+    return {
+      type,
+      team_members: mons,
+      exploited_by: exploiters,
+      mitigation: mit.text,
+      mitigation_detail: mit.detail,
+    };
+  });
 
-  return { critical, double_weaknesses: doubleWeaknesses };
+  // Mega members get their weaknesses listed in full, regardless of whether the
+  // rest of the team shares them.
+  //
+  // The critical list only surfaces a type when 3+ members are weak to it, which
+  // is the right filter for "shared structural weakness" but hides something
+  // that matters more in practice: a team runs exactly one Mega, it is usually
+  // the win condition, and it cannot be replaced mid-game. A type that hits ONLY
+  // the Mega never reaches the 3-member bar and so was never mentioned at all.
+  const megaWeaknesses = team
+    .filter((m) => String(m.pokemonRow?.name || '').toLowerCase().includes('-mega'))
+    .map((m) => {
+      const weaknesses = weaknessesOf(typesOf(m.pokemonRow));
+      const types = Object.entries(weaknesses)
+        .map(([type, multiplier]) => {
+          const exploiters = exploitersFor(type, [m.pokemon]);
+          const mit = mitigationFor(type, exploiters);
+          return {
+            type,
+            multiplier,
+            shared_with_team: (weakBy[type] || []).filter((n) => n !== m.pokemon),
+            exploited_by: exploiters,
+            mitigation: mit.text,
+            mitigation_detail: mit.detail,
+          };
+        })
+        // Heaviest multiplier first, then by how exposed the type leaves the
+        // rest of the team.
+        .sort((a, b) => b.multiplier - a.multiplier || b.shared_with_team.length - a.shared_with_team.length);
+      return { pokemon: m.pokemon, types: typesOf(m.pokemonRow), weak_to: types };
+    });
+
+  return { critical, double_weaknesses: doubleWeaknesses, mega_weaknesses: megaWeaknesses };
 }
 
 // FIX 8: Weather interaction map — which weathers counter/replace each other.
@@ -733,14 +1007,29 @@ const CHARGING_MOVES = new Set(['electro shot', 'solar beam', 'sky attack', 'met
 // Wide Guard: find the real meta attacker (top-50 usage) whose real top move is
 // BOTH a spread move AND matches a type this team has a member weak to — named
 // specifically, not a generic "blocks spread moves" line. Highest-usage match wins.
-function buildWideGuardSynergy(team, typeMetaData, topUsageMovesByName, movesByLower) {
+// Returns ONE entry per protected teammate, not a single global best.
+//
+// The previous version kept only the highest-usage match across the whole team,
+// so exactly one teammate ever got the specific "blocks Earthquake — protects X
+// from Garchomp's Ground STAB" line. Every other teammate fell through to the
+// generic supportReasons() line ("Wide Guard blocks spread moves from hitting
+// the whole team for a turn, supporting Archaludon"), which names neither the
+// move being blocked nor the threat it comes from — and Wide Guard protects the
+// whole side at once, so there was never a reason to describe only one of them.
+// Archaludon (Steel/Dragon) is 2x weak to Ground and Garchomp is the #1 meta
+// Pokemon; that pairing deserves the same named line Kingambit was getting.
+//
+// Per teammate the highest-usage qualifying attacker wins; teammates are ordered
+// by their best attacker's usage so the most valuable protection reads first.
+function buildWideGuardSynergies(team, typeMetaData, topUsageMovesByName, movesByLower) {
   const wideGuardUser = team.find((m) => (m.moves || []).some((mv) => mv.move === 'Wide Guard'));
-  if (!wideGuardUser) return null;
+  if (!wideGuardUser) return [];
 
-  let best = null;
+  const perTeammate = [];
   for (const member of team) {
     if (member.pokemon === wideGuardUser.pokemon) continue;
     const weaknesses = weaknessesOf(typesOf(member.pokemonRow));
+    let best = null;
     for (const [type, mult] of Object.entries(weaknesses)) {
       const metaUsers = typeMetaData.byType[type] || [];
       for (let rank = 0; rank < metaUsers.length; rank++) {
@@ -751,19 +1040,34 @@ function buildWideGuardSynergy(team, typeMetaData, topUsageMovesByName, movesByL
           if (!SPREAD_MOVES.has(moveLower)) continue;
           const moveRow = movesByLower[moveLower];
           if (!moveRow || moveRow.type !== type) continue;
-          if (!best || metaUsers[rank].usage > best.usage) {
-            best = { teammate: member.pokemon, move: mv.move, attacker: threatName, usage: metaUsers[rank].usage, rank: rank + 1, type, effectiveness: mult };
+          // Prefer the higher-usage attacker; break ties toward the bigger
+          // effectiveness multiplier (a 4x hit blocked matters more than a 2x).
+          const candidate = { teammate: member.pokemon, move: mv.move, attacker: threatName, usage: metaUsers[rank].usage, rank: rank + 1, type, effectiveness: mult };
+          if (!best || candidate.usage > best.usage
+            || (candidate.usage === best.usage && candidate.effectiveness > best.effectiveness)) {
+            best = candidate;
           }
         }
       }
     }
+    if (best) perTeammate.push(best);
   }
-  if (!best) return null;
-  return {
+
+  perTeammate.sort((a, b) => b.usage - a.usage || b.effectiveness - a.effectiveness);
+
+  return perTeammate.map((best) => ({
     pair: [wideGuardUser.pokemon, best.teammate],
     score: null,
-    reasons: [`Wide Guard blocks ${best.move} — protects ${best.teammate} from ${best.attacker}'s ${best.type} STAB (${best.effectiveness}x, #${best.rank} meta at ${Math.round(best.usage * 100)}%)`],
-  };
+    reasons: [`Wide Guard blocks ${best.move} — protects ${best.teammate} from ${best.attacker}'s ${best.type} STAB (${best.effectiveness}x, ${best.teammate}'s ${best.effectiveness === 4 ? 'double ' : ''}weakness; #${best.rank} meta at ${Math.round(best.usage * 100)}%)`],
+  }));
+}
+
+// Backwards-compatible single-result wrapper: some callers/tests expect the old
+// "best pair or null" shape. Kept as a thin adapter over the array version
+// rather than duplicating the search.
+function buildWideGuardSynergy(team, typeMetaData, topUsageMovesByName, movesByLower) {
+  const all = buildWideGuardSynergies(team, typeMetaData, topUsageMovesByName, movesByLower);
+  return all.length > 0 ? all[0] : null;
 }
 
 // Rage Powder: name the specific teammate + setup/charging/negative-priority
@@ -869,7 +1173,12 @@ function damagePercentRange(attackerRow, attackerSide, defenderRow, defenderSide
     defender: {
       name: defenderRow.name, nature: defenderSide.nature || 'Hardy', sp: defenderSide.sp || {},
       item: defenderSide.item || '', ability: defenderSide.ability || defenderRow.ability || '',
-      baseStats: { hp: defenderRow.hp, atk: defenderRow.def, def: defenderRow.def, spa: defenderRow.spa, spd: defenderRow.spd, spe: defenderRow.spe },
+      // `atk` was `defenderRow.def` — the defender's Attack was being set to its
+      // Defense. Invisible for most moves, which never read the defender's Attack,
+      // but Foul Play attacks WITH the target's Attack stat, so every Foul Play
+      // number the product printed was computed off the wrong stat. Sableye (the
+      // swap candidate currently being recommended) and Grimmsnarl both run it.
+      baseStats: { hp: defenderRow.hp, atk: defenderRow.atk, def: defenderRow.def, spa: defenderRow.spa, spd: defenderRow.spd, spe: defenderRow.spe },
       types: [defenderRow.type1, defenderRow.type2].filter(Boolean),
     },
     move: moveData,
@@ -933,20 +1242,60 @@ async function analyzeMatchups(team, legalPokemonSet, weatherAnalysis) {
       for (const member of team) {
         for (const mv of (member.moves || []).slice(0, 4)) {
           if (!mv.power || !mv.type) continue;
-          if (effectivenessAgainst(mv.type, candidateTypes) === 0) continue;
+          // Weather Ball is stored as Normal in the moves table (its no-weather
+          // value) and its real attacking type is only known at damage time. The
+          // damage calc already resolved it correctly (it is passed the move NAME
+          // and the active weather), but every check and label out here was still
+          // reading the static Normal — so the type-immunity skip below tested
+          // the wrong type, and the boosted-move label never matched, which is
+          // why this printed a bare "Weather Ball" while Heat Wave right next to
+          // it got its "(Sun-boosted)" tag.
+          // Per-attacker, not team-wide: Pelipper's own Drizzle makes its
+          // Weather Ball Water even on a team whose first setter is Drought.
+          const memberWeather = weatherForMember(member, activeWeather);
+          const effType = resolveMoveType(mv, memberWeather);
+          if (effectivenessAgainst(effType, candidateTypes) === 0) continue;
           const attackerSide = { nature: member.nature, item: member.item, ability: member.ability, sp: member.sp, ivs: { hp: 31 } };
           let dmg;
           try {
-            dmg = damagePercentRange(member.pokemonRow, attackerSide, candidateRow, targetSide, mv.move, activeWeather);
+            // memberWeather, not activeWeather: a member that sets its own
+            // weather attacks under it. Calculating Pelipper's Weather Ball
+            // under the team's first setter (Sun) while the label says Water
+            // would put the number and the explanation in different worlds.
+            dmg = damagePercentRange(member.pokemonRow, attackerSide, candidateRow, targetSide, mv.move, memberWeather);
           } catch (_err) { continue; }
           if (dmg.min >= 100) {
             // FIX 2: enriched OHKO entry with move conditions, defender spread,
             // and check across all observed spread variants.
             const sp = candidateSpreadInfo.sp;
-            // Check for weather/condition boost on the move
-            const sunBoosted = weatherAnalysis?.setters?.some(s => s.weather === 'Sun') && ['Fire', 'Grass'].includes(mv.type || '');
-            const rainBoosted = weatherAnalysis?.setters?.some(s => s.weather === 'Rain') && ['Water', 'Flying'].includes(mv.type || '');
-            const moveCondition = sunBoosted ? ' (Sun-boosted)' : rainBoosted ? ' (Rain-boosted)' : '';
+            // Weather condition label.
+            //
+            // The old test was ['Fire','Grass'] for Sun and ['Water','Flying']
+            // for Rain, which mislabels two of the four. Sun boosts Fire damage
+            // by 1.5x and Rain boosts Water by 1.5x — those are real damage
+            // boosts. Grass in Sun and Flying in Rain get NO damage boost at
+            // all: what Sun does for Solar Beam is remove its charge turn, and
+            // what Rain does for Hurricane is make it always hit. Calling either
+            // "boosted" overstates the damage figure sitting right beside it.
+            // Both effects are still worth naming, just named accurately.
+            const moveLower = (mv.move || '').toLowerCase();
+            const conditionParts = [];
+            // Weather Ball ALWAYS states its resolved type and the weather that
+            // resolved it, including the no-weather case. Previously the type
+            // was only stated when it differed from the table value, so a
+            // Weather Ball evaluated with no active weather printed bare —
+            // indistinguishable from a normal move and silently Normal-type.
+            if (mv.move === 'Weather Ball') {
+              conditionParts.push(memberWeather ? `${effType}-type in ${memberWeather}` : `${effType}-type, no weather active`);
+            } else if (effType !== mv.type) {
+              conditionParts.push(`${effType}-type`);
+            }
+            if (memberWeather === 'Sun' && effType === 'Fire') conditionParts.push('Sun-boosted');
+            else if (memberWeather === 'Rain' && effType === 'Water') conditionParts.push('Rain-boosted');
+            else if (memberWeather === 'Sun' && SUN_CHARGE_FREE.has(moveLower)) conditionParts.push('Sun: no charge turn');
+            else if (memberWeather === 'Rain' && RAIN_ALWAYS_HITS.has(moveLower)) conditionParts.push('Rain: always hits');
+            else if (memberWeather === 'Snow' && SNOW_ALWAYS_HITS.has(moveLower)) conditionParts.push('Snow: always hits');
+            const moveCondition = conditionParts.length > 0 ? ` (${conditionParts.join(', ')})` : '';
             const itemAffects = member.item && DAMAGE_AFFECTING_ITEMS.has((member.item || '').toLowerCase());
             const moveConditionNote = moveCondition || (itemAffects ? ` (${member.item})` : '');
 
@@ -991,6 +1340,10 @@ async function analyzeMatchups(team, legalPokemonSet, weatherAnalysis) {
               target_sp_stat_value: mv.category === 'Physical' ? (sp.def || 0) : (sp.spd || 0),
               target_sp_source: `${sp.hp || 0}HP / ${mv.category === 'Physical' ? (sp.def || 0) : (sp.spd || 0)}${mv.category === 'Physical' ? 'Def' : 'SpD'}, most common spread (${candidateSpreadInfo.observations} observations)`,
               move_condition: moveConditionNote,
+              // Resolved attacking type, so downstream consumers don't have to
+              // re-derive it or parse it back out of move_condition.
+              move_type: effType,
+              move_type_is_dynamic: effType !== mv.type,
               guaranteed_vs_all: guaranteedNote,
               ohko_percent: ohkoPercent,
               attacker_speed: member.final_stats?.spe ?? member.pokemonRow.spe,
@@ -1100,6 +1453,12 @@ async function analyzeMatchups(team, legalPokemonSet, weatherAnalysis) {
     ohko_risks: ohkoRisks.slice(0, 20),
     ohko_opportunity_count: ohkoOpportunities.length,
     ohko_risk_count: ohkoRisks.length,
+    // Unsliced list for internal consumers (analyzeWeaknesses needs to look up a
+    // KO on a SPECIFIC meta attacker, and the display slice is ordered by raw
+    // damage — an OHKO on the exact Pokemon we care about can easily sit below
+    // the top 20). The caller destructures this off before building the response
+    // body so it never reaches the API payload.
+    all_ohko_opportunities: ohkoOpportunities,
   };
 }
 
@@ -1248,6 +1607,14 @@ async function suggestCoverageReplacements(team, ohkoRisks) {
 
 
 module.exports = {
+  // Exported for src/utils/archetype_matchups.js, which needs the same real-data
+  // helpers this file uses internally. archetype_matchups requires this module;
+  // this module must never require it back (the route wires them together).
+  damagePercentRange,
+  effectiveSpeed,
+  typesOf,
+  topMovesFor,
+  getTop50UsageRows,
   getTypeMetaData,
   analyzeCoverage,
   analyzeSynergies,
@@ -1259,6 +1626,7 @@ module.exports = {
   analyzeMatchups,
   getLegalPokemonSet,
   buildWideGuardSynergy,
+  buildWideGuardSynergies,
   buildRagePowderSynergy,
   buildHospitalitySynergy,
   batchFetchTopMoveData,

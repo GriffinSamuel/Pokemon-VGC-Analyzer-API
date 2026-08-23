@@ -1,5 +1,5 @@
 const path = require('path');
-const { SP_BUDGET_TOTAL, SP_CAP_PER_STAT, natureMultiplierFor, findBreakpoints, STAT_ORDER, STAT_INDEX } = require('./stat_formula');
+const { SP_BUDGET_TOTAL, SP_CAP_PER_STAT, calcStat, natureMultiplierFor, findBreakpoints, STAT_ORDER, STAT_INDEX } = require('./stat_formula');
 const { scoreSpread, minimizeSpread } = require('./spread_scorer');
 const logger = require('./logger');
 const { getNerdOfNowSets } = require('./nerd_of_now');
@@ -52,17 +52,21 @@ const POST_VALIDATION_HOOK = (sp) => {
   }
 };
 
-// Fills under-budget spreads to exactly 66. Adds missing SP to the least
-// important stat first (reverse of minimizeSpread's decreasePriority) so the
-// minimizer can immediately identify it as unspendable.
-function ensureBudget(sp) {
+// Fills under-budget spreads to exactly 66 before scoring. Adds missing SP to
+// the least important stat first (reverse of minimizeSpread's decreasePriority)
+// so the minimizer can immediately identify it as removable.
+// `lockedIndices` (FIX 1): a locked offensive stat must never receive padding —
+// without this, a slow_bulky_support could be handed SpA here and violate the
+// hard-zero invariant that determineLockedIndices()/redistributeOverflow()
+// enforce everywhere else in this file.
+function ensureBudget(sp, lockedIndices = EMPTY_LOCKED) {
   let total = 0;
   for (const s of STAT_ORDER) total += sp[s] || 0;
   if (total >= SP_BUDGET_TOTAL) return { ...sp };
-  if (total < SP_BUDGET_TOTAL) console.log('ensureBudget FILLING: total=' + total + ' sp=' + JSON.stringify(sp));
   let missing = SP_BUDGET_TOTAL - total;
   const result = { ...sp };
-  const fillOrder = [...STAT_ORDER].reverse();
+  const locked = new Set([...lockedIndices].map((i) => STAT_ORDER[i]));
+  const fillOrder = [...STAT_ORDER].reverse().filter((s) => !locked.has(s));
   for (const s of fillOrder) {
     if (missing <= 0) break;
     const cur = result[s] || 0;
@@ -71,6 +75,71 @@ function ensureBudget(sp) {
       const add = Math.min(room, missing);
       result[s] = cur + add;
       missing -= add;
+    }
+  }
+  return result;
+}
+
+// Every one of the 66 SP must be spent. 66 is a FLOOR as well as a ceiling —
+// unspent budget is never correct, because a point sitting unused is strictly
+// worse than the same point adding bulk. minimizeSpread() finds the justified
+// floor (the minimum that preserves every KO tier); this places the remainder.
+//
+// Fill order:
+//   offensive roles : HP -> weaker of Def/SpD -> primary attacking stat -> stronger of Def/SpD -> Spe
+//   support roles   : HP -> weaker of Def/SpD -> stronger of Def/SpD -> Spe
+// A locked offensive stat is never a target — the offensive lock outranks the
+// budget rule and is enforced by the `locked` filter below.
+//
+// Chunk-evaluated waste rule: test the WHOLE remaining block against a stat. If
+// the entire block produces no stat gain (the 0.9-alignment floor() eating it),
+// skip that stat; if any part of it gains, place the whole block. This is not
+// evaluated per-point, so a block never stalls half-placed inside a dead zone.
+function redistributeToBudget(sp, lockedIndices = EMPTY_LOCKED, pokemonRow, nature) {
+  const result = { ...sp };
+  let remaining = SP_BUDGET_TOTAL - STAT_ORDER.reduce((sum, k) => sum + (result[k] || 0), 0);
+  if (remaining <= 0) return result;
+
+  const locked = new Set([...lockedIndices].map((i) => STAT_ORDER[i]));
+  const statAt = (key, val) => {
+    const isHp = key === 'hp';
+    return calcStat(pokemonRow[key], val, isHp ? 1.0 : natureMultiplierFor(nature, key), isHp);
+  };
+
+  const weakerDef = statAt('def', result.def || 0) <= statAt('spd', result.spd || 0) ? 'def' : 'spd';
+  const strongerDef = weakerDef === 'def' ? 'spd' : 'def';
+  const offense = locked.has('atk')
+    ? (locked.has('spa') ? null : 'spa')
+    : (locked.has('spa') ? 'atk' : ((pokemonRow.atk || 0) >= (pokemonRow.spa || 0) ? 'atk' : 'spa'));
+
+  const order = ['hp', weakerDef, offense, strongerDef, 'spe']
+    .filter(Boolean)
+    .filter((k) => !locked.has(k))
+    .filter((k, i, arr) => arr.indexOf(k) === i);
+
+  for (const key of order) {
+    if (remaining <= 0) break;
+    const cur = result[key] || 0;
+    const room = Math.min(SP_CAP_PER_STAT - cur, remaining);
+    if (room <= 0) continue;
+    if (statAt(key, cur + room) > statAt(key, cur)) {
+      result[key] = cur + room;
+      remaining -= room;
+    }
+  }
+
+  // 66 is not optional. If the waste rule blocked every preferred stat, place
+  // what is left anywhere unlocked that has room. Four unlocked stats at 32
+  // each is 128, so this can always complete.
+  if (remaining > 0) {
+    for (const key of STAT_ORDER) {
+      if (remaining <= 0) break;
+      if (locked.has(key)) continue;
+      const cur = result[key] || 0;
+      const room = Math.min(SP_CAP_PER_STAT - cur, remaining);
+      if (room <= 0) continue;
+      result[key] = cur + room;
+      remaining -= room;
     }
   }
   return result;
@@ -576,10 +645,7 @@ async function findOptimalSpread(pokemon, nature, role, threatMatrix, metaContex
 
   // Ensure every top candidate sums to exactly 66 before detailed scoring
   for (const c of top) {
-    const before = STAT_ORDER.reduce((s, k) => s + (c.sp[k] || 0), 0);
-    c.sp = ensureBudget(c.sp);
-    const after = STAT_ORDER.reduce((s, k) => s + (c.sp[k] || 0), 0);
-    if (before !== after) console.log('ensureBudget modified: ' + before + ' -> ' + after + ' sp=' + JSON.stringify(c.sp));
+    c.sp = ensureBudget(c.sp, lockedIndices);
   }
 
   // Detailed re-score (thresholds_met/thresholds_missed) only for the final top 5
@@ -590,7 +656,6 @@ async function findOptimalSpread(pokemon, nature, role, threatMatrix, metaContex
     const c = top[i];
     const detail = await scoreSpread(pokemon, c.sp, nature, role, threatMatrix, metaContext, Object.assign({}, { detailed: true, item }, fieldOpts ? { fieldOpts } : {}));
     const spreadTotal = sumArr(spreadToArray(c.sp));
-    if (spreadTotal !== SP_BUDGET_TOTAL) console.log('DETAILED SCORING: spread total = ' + spreadTotal + ' for ' + JSON.stringify(c.sp));
     spreads.push({
       rank: i + 1,
       sp: c.sp,
@@ -602,27 +667,48 @@ async function findOptimalSpread(pokemon, nature, role, threatMatrix, metaContex
     });
   }
 
-  // SP MINIMIZATION: the displayed spread IS the minimized (load-bearing)
-  // floor — "budget is a ceiling, not a target" (CLAUDE.md), so a stat with
-  // no threshold requiring it is left at 0 rather than padded to fill 66.
-  // `minimization` records what was trimmed for transparency in the Why block.
+  // SP MINIMIZATION, then REDISTRIBUTION. Two distinct numbers come out of this:
+  //   justified_sp — the minimum that preserves every KO tier, i.e. the floor
+  //                  each stat is load-bearing for. This is what the Why block
+  //                  attributes to named threats.
+  //   sp           — the displayed spread, ALWAYS exactly 66. The difference is
+  //                  placed into bulk by redistributeToBudget().
+  // 66 is a floor as well as a ceiling: leaving budget unspent is never right,
+  // since an unused point is strictly worse than the same point adding bulk.
+  // thresholds_met is recomputed against the redistributed spread so every
+  // damage figure shown belongs to the spread actually printed — the failure
+  // mode this project has hit three times is a value read off a spread that no
+  // longer exists.
   if (spreads.length > 0 && teamBuild) {
     const topSpread = spreads[0];
     try {
       const minimResult = await minimizeSpread(pokemon, topSpread.sp, nature, role, threatMatrix, metaContext, item, fieldOpts);
-      const justifiedTotal = Math.max(0, SP_BUDGET_TOTAL - (minimResult.unspendable || 0));
-      topSpread.sp = minimResult.minimized_sp;
-      topSpread.total_sp = justifiedTotal;
-      topSpread.final_stats = minimResult.final_stats;
-      topSpread.thresholds_met = minimResult.thresholds_met;
+      const floorSp = minimResult.minimized_sp;
+      const floorTotal = STAT_ORDER.reduce((s, k) => s + (floorSp[k] || 0), 0);
+
+      const finalSp = redistributeToBudget(floorSp, lockedIndices, pokemon, nature);
+      POST_VALIDATION_HOOK(finalSp);
+      const finalTotal = STAT_ORDER.reduce((s, k) => s + (finalSp[k] || 0), 0);
+      if (finalTotal !== SP_BUDGET_TOTAL) {
+        throw new Error(`redistributeToBudget produced ${finalTotal} SP, expected ${SP_BUDGET_TOTAL} — ${JSON.stringify(finalSp)}`);
+      }
+
+      const finalDetail = await scoreSpread(pokemon, finalSp, nature, role, threatMatrix, metaContext, Object.assign({}, { detailed: true, item }, fieldOpts ? { fieldOpts } : {}));
+
+      topSpread.sp = finalSp;
+      topSpread.total_sp = finalTotal;
+      topSpread.final_stats = finalDetail.final_stats;
+      topSpread.thresholds_met = finalDetail.thresholds_met;
+      topSpread.thresholds_missed = finalDetail.thresholds_missed;
       topSpread.minimization = {
         reductions: minimResult.reductions,
-        unspendable: minimResult.unspendable || 0,
-        justified_sp: minimResult.minimized_sp,
-        justified_total: justifiedTotal,
+        justified_sp: floorSp,
+        justified_total: floorTotal,
+        allocated_to_bulk: SP_BUDGET_TOTAL - floorTotal,
       };
     } catch (err) {
-      // Minimization failure — log and continue with the original spread
+      // Minimization/redistribution failure — log and continue with the
+      // pre-minimization spread, which ensureBudget already brought to 66.
       console.error('Minimization failed for ' + (pokemon?.name || pokemon) + ': ' + err.message);
       POST_VALIDATION_HOOK(topSpread.sp);
     }
@@ -647,6 +733,8 @@ async function findOptimalSpread(pokemon, nature, role, threatMatrix, metaContex
 
 module.exports = {
   findOptimalSpread,
+  redistributeToBudget,
+  ensureBudget,
   determineLockedIndices,
   generateCandidate,
   crossover,

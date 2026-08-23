@@ -22,6 +22,7 @@ const {
   analyzeTrickRoom, analyzeSpeedTiers, analyzeWeaknesses, analyzeArchetypeMatchups,
   analyzeMatchups, getLegalPokemonSet, suggestCoverageReplacements,
 } = require('../utils/team_analyzer');
+const { analyzeArchetypeMatchupsLive } = require('../utils/archetype_matchups');
 const fs = require('fs');
 const path = require('path');
 
@@ -41,6 +42,12 @@ const STAT_ABBR = {
 };
 const WEATHER_SETTERS = {
   Drizzle: 'Rain Dance', Drought: 'Sunny Day', 'Sand Stream': 'Sandstorm', 'Snow Warning': 'Snow',
+};
+// Ability -> the weather it actually sets. Distinct from WEATHER_SETTERS above,
+// which maps an ability to the equivalent MOVE name; that vocabulary can't be
+// used to resolve Weather Ball.
+const WEATHER_SETTER_WEATHER = {
+  Drizzle: 'Rain', Drought: 'Sun', 'Sand Stream': 'Sand', 'Snow Warning': 'Snow',
 };
 const SUPPORT_MOVES = new Set([
   'protect', 'follow me', 'tailwind', 'wide guard', 'quick guard',
@@ -535,19 +542,37 @@ function buildMoveTeamContext(member, mv, team, teamWeatherSet) {
     return `${slowMembers.length}/${team.length} members have base Speed < ${TR_SLOW_SPEED_THRESHOLD} (${slowMembers.join(', ')}) — a genuine slow-team strategy`;
   }
 
-  // FIX 10: Weather Ball's real attacking type/power under this team's active
-  // weather, instead of evaluating it as static Normal-type/40 BP.
-  if (mv.move === 'Weather Ball' && teamWeatherSet && teamWeatherSet.size > 0) {
-    for (const weather of teamWeatherSet) {
-      const effectiveType = WEATHER_BALL_TYPES[weather];
-      if (!effectiveType) continue;
-      // Sun/Rain/Sand/Snow don't boost Special Attack — they boost specific types' damage
-      const weatherTypeBonus = (weather === 'rain' && effectiveType === 'Water')
-        || (weather === 'sun' && effectiveType === 'Fire') ? 1.5 : 1;
-      const effectiveBP = weatherTypeBonus > 1 ? Math.round(WEATHER_BALL_BOOSTED_BP * weatherTypeBonus) : WEATHER_BALL_BOOSTED_BP;
-      const bonusNote = weatherTypeBonus > 1 ? ` (${weatherTypeBonus}x weather bonus = effective ${effectiveBP} BP)` : '';
-      return `${WEATHER_BALL_BOOSTED_BP} BP ${effectiveType}-type, assumes our ${weather} active${bonusNote}`;
+  // Weather Ball's real attacking type/power, instead of its static
+  // Normal-type/50 BP table values.
+  //
+  // Resolved for THIS member, not once for the team. A member with its own
+  // weather ability always plays under that weather — Pelipper's Drizzle makes
+  // Pelipper's Weather Ball Water regardless of what else the team sets. The old
+  // code walked the team weather set and took the first hit, so on a two-setter
+  // team (Drought + Drizzle here) every member got whichever weather happened to
+  // be inserted first.
+  if (mv.move === 'Weather Ball') {
+    const ownWeather = WEATHER_SETTER_WEATHER[member?.ability];
+    const teamDefault = teamWeatherSet
+      ? [...teamWeatherSet].find((w) => WEATHER_BALL_TYPES[w]) || null
+      : null;
+    const weather = ownWeather || teamDefault;
+    const effectiveType = weather ? WEATHER_BALL_TYPES[weather] : null;
+    // Always says something. Previously a Weather Ball with no resolvable
+    // weather fell through this block silently and was described by the generic
+    // move logic below as an ordinary Normal move.
+    if (!effectiveType) {
+      return 'stays 50 BP Normal-type — no weather setter on this team to transform it';
     }
+    // Sun/Rain don't boost Special Attack; they boost Fire/Water damage by 1.5x.
+    // The old comparison tested lowercase 'rain'/'sun' against a set holding
+    // 'Rain'/'Sun', so it never matched and the bonus note never once printed.
+    const weatherTypeBonus = (weather === 'Rain' && effectiveType === 'Water')
+      || (weather === 'Sun' && effectiveType === 'Fire') ? 1.5 : 1;
+    const effectiveBP = Math.round(WEATHER_BALL_BOOSTED_BP * weatherTypeBonus);
+    const bonusNote = weatherTypeBonus > 1 ? ` (${weatherTypeBonus}x weather bonus = effective ${effectiveBP} BP)` : '';
+    const source = ownWeather ? `its own ${member.ability}` : `our ${weather}`;
+    return `${WEATHER_BALL_BOOSTED_BP} BP ${effectiveType}-type under ${source}${bonusNote}`;
   }
 
   if (!mv.type || !mv.power) return null; // other status/support moves: no coverage/redundancy signal to report
@@ -648,6 +673,33 @@ function sectionDivider(label) {
   return opening + '─'.repeat(Math.max(TEXT_DIVIDER_WIDTH - opening.length, 4));
 }
 
+// Renders the three kinds of answer to a shared weakness on their own labelled
+// lines. They are deliberately not merged into one sentence: a resist buys a
+// turn, super effective damage trades, and an OHKO removes the threat outright —
+// reading which of the three a team actually has is the whole point.
+// Ordered strongest first. Falls back to the flat `.mitigation` string for any
+// caller whose payload predates `mitigation_detail`.
+function mitigationLines(entry, indent) {
+  const detail = entry.mitigation_detail;
+  if (!detail) {
+    return entry.mitigation ? [`${indent}Mitigation: ${entry.mitigation}`] : [];
+  }
+  const groups = [
+    ['KOs it', detail.ohko],
+    ['Hits it hard', detail.super_effective],
+    ['Absorbs it', detail.resists],
+  ].filter(([, items]) => Array.isArray(items) && items.length > 0);
+
+  if (groups.length === 0) {
+    return [`${indent}Mitigation: none — no resist, no super effective move, and no OHKO on any common attacker of this type`];
+  }
+  const lines = [`${indent}Mitigation:`];
+  for (const [label, items] of groups) {
+    lines.push(`${indent}  ${label}: ${items.join('; ')}`);
+  }
+  return lines;
+}
+
 // Displays raw Stat Points (0-32 per stat, 66 total) — never converted to
 // classic EVs. Labeled "SP:" rather than "EVs:" since a real Showdown "EVs:"
 // line means 0-252 numbers; showing 0-32 values under that label would misread
@@ -733,7 +785,8 @@ function describeThresholdForWhy(t, allDefensiveThresholds, statKey) {
     // FIX 4: secondary interactions — top 4 closest-to-OHKO, ordered by max damage descending
     if (allDefensiveThresholds && statKey) {
       const secondaries = allDefensiveThresholds
-        .filter(th => th.stat === statKey && th.category === 'defensive' && th !== t)
+        .filter(th => th.category === 'defensive' && th !== t
+          && (th.stat === statKey || (th.also_load_bearing || []).includes(statKey)))
         .map(th => ({
           ...th,
           // FIX 8: extract full move name from threat string (not split(' ')[1])
@@ -825,41 +878,55 @@ function koTierDelta(t) {
 // stat, or a generic breakpoint note otherwise — never fabricated beyond
 // what thresholds_met/role already say.
 function buildSpAllocationWhy(member) {
+  // A threshold belongs to its primary `stat` AND to every stat listed in
+  // `also_load_bearing` — zeroing either one on its own regresses the KO tier,
+  // so both lines are entitled to cite it as the real reason for their SP.
+  // Without this, a stat whose investment is only jointly load-bearing falls
+  // back to whatever weak threshold it happens to own outright: Archaludon at
+  // 25 HP cited "survives Kingambit Kowtow Cleave (36.3-44.2%)" while the actual
+  // constraint holding HP there was Garchomp Earthquake at 99.5% on the Def line.
+  const statsClaiming = (t) => [t.stat, ...(t.also_load_bearing || [])].filter(Boolean);
+
+  // Primary selection, in priority order:
+  //   1. how dangerous the threat is at ZERO investment — an OHKO baseline
+  //      outranks a 3HKO baseline
+  //   2. how many KO tiers the investment buys
+  //   3. raw damage survived
+  //   4. contribution
+  // Tier delta alone ties nearly everything at +1 now that sub-OHKO
+  // improvements are credited; contribution alone re-introduces the popularity
+  // bias the Bug 1 fix removed.
+  const betterThreshold = (cand, best) => {
+    if (!best) return true;
+    if (cand.category === 'defensive' && best.category === 'defensive') {
+      const ci = KO_TIERS_LOCAL.indexOf(cand.baseline_ko);
+      const bi = KO_TIERS_LOCAL.indexOf(best.baseline_ko);
+      const cSev = ci === -1 ? KO_TIERS_LOCAL.length : ci;
+      const bSev = bi === -1 ? KO_TIERS_LOCAL.length : bi;
+      if (cSev !== bSev) return cSev < bSev;
+    }
+    // Offensive improvements are NEGATIVE deltas (tier index drops toward OHKO);
+    // defensive improvements are POSITIVE. One comparison sign cannot serve both.
+    const cd = koTierDelta(cand);
+    const bd = koTierDelta(best);
+    if (cd !== bd) return cand.category === 'defensive' ? cd > bd : cd < bd;
+    const cDmg = cand.weighted_damage_max || 0;
+    const bDmg = best.weighted_damage_max || 0;
+    if (cDmg !== bDmg) return cDmg > bDmg;
+    return (cand.contribution || 0) > (best.contribution || 0);
+  };
+
   const bestByStat = {};
   for (const t of member.thresholds_met || []) {
-    if (!t.stat) continue;
-    if (!bestByStat[t.stat]) {
-      bestByStat[t.stat] = t;
-    } else {
-      const curDelta = koTierDelta(t);
-      const bestDelta = koTierDelta(bestByStat[t.stat]);
-      // Offensive improvements are NEGATIVE deltas (tier index drops toward OHKO,
-      // e.g. 2HKO→OHKO = −1); defensive improvements are POSITIVE deltas (baseline
-      // is always OHKO after the marginal-value guard, so OHKO→2HKO = +1). A single
-      // comparison sign can't serve both — the binding constraint for a defensive
-      // stat is the LARGEST tier gain (max delta), for an offensive stat the LARGEST
-      // tier gain is the most-negative delta (min delta).
-      const isDefensive = t.category === 'defensive';
-      const betterByDelta = isDefensive ? curDelta > bestDelta : curDelta < bestDelta;
-      // Equal deltas are common (several OHKO→2HKO survivals land in the same
-      // tier), so the tiebreak picks the threshold where the SP does the most
-      // work: the one dealing the most damage (the biggest residual threat you
-      // survive), falling back to contribution when damage is unavailable (e.g.
-      // speed thresholds carry no damage figure).
-      const curDamage = t.weighted_damage_max || 0;
-      const bestDamage = bestByStat[t.stat].weighted_damage_max || 0;
-      const betterByDamage = curDamage > bestDamage
-        || (curDamage === bestDamage && t.contribution > bestByStat[t.stat].contribution);
-      if (betterByDelta || (curDelta === bestDelta && betterByDamage)) {
-        bestByStat[t.stat] = t;
-      }
+    for (const statKey of statsClaiming(t)) {
+      if (betterThreshold(t, bestByStat[statKey])) bestByStat[statKey] = t;
     }
   }
   const primaryOffenseStat = member.pokemonRow.atk >= member.pokemonRow.spa ? 'atk' : 'spa';
   const allDefensiveThresholds = (member.thresholds_met || []).filter(t => t.category === 'defensive');
   const lines = [];
   let justifiedSp = 0;
-  let unspendableSp = 0;
+  let bulkSp = 0;
   const justification = member.minimization?.justified_sp;
 
   for (const statKey of STAT_ORDER) {
@@ -869,26 +936,29 @@ function buildSpAllocationWhy(member) {
     const best = bestByStat[statKey];
 
     if (justification) {
-      // Per-stat split: floor value from minimization = load-bearing portion
+      // Per-stat split: the minimization floor is the load-bearing portion, the
+      // rest was placed by redistributeToBudget() to spend the full 66. It is
+      // "allocated to bulk", not "unspendable" — the point is spent and is
+      // adding a real stat, it just is not what any single threshold required.
       const floorVal = justification[statKey] || 0;
-      const waste = spVal - floorVal; // unspendable portion of this stat
+      const bulk = spVal - floorVal;
 
       if (best && floorVal > 0) {
         justifiedSp += floorVal;
-        unspendableSp += waste;
+        bulkSp += bulk;
         const desc = describeThresholdForWhy(best, allDefensiveThresholds, statKey);
-        lines.push(waste > 0 ? `${label} — ${desc} (${waste} unspendable)` : `${label} — ${desc}`);
+        lines.push(bulk > 0 ? `${label} — ${desc} (+${bulk} allocated to bulk)` : `${label} — ${desc}`);
       } else if (statKey === primaryOffenseStat && floorVal > 0) {
         justifiedSp += floorVal;
-        unspendableSp += waste;
-        lines.push(waste > 0 ? `${label} — maximized for offensive role (${waste} unspendable)` : `${label} — maximized for offensive role`);
+        bulkSp += bulk;
+        lines.push(bulk > 0 ? `${label} — maximized for offensive role (+${bulk} allocated to bulk)` : `${label} — maximized for offensive role`);
       } else {
-        unspendableSp += spVal;
-        lines.push(`${label} — unspendable SP: ${spVal} (no threshold cleared)`);
+        bulkSp += spVal;
+        lines.push(`${label} — allocated to bulk (no threshold of its own)`);
       }
     } else {
-      // PROBLEM 2 FIX: justification text is NEVER overwritten by redistribution.
-      // Every stat with SP shows its justifying threshold + [also:.] secondaries.
+      // No minimization data (e.g. the individual /api/recommend/evs path, which
+      // does not minimize). Every stat with SP shows its justifying threshold.
       if (best) {
         justifiedSp += spVal;
         lines.push(`${label} — ${describeThresholdForWhy(best, allDefensiveThresholds, statKey)}`);
@@ -896,18 +966,17 @@ function buildSpAllocationWhy(member) {
         justifiedSp += spVal;
         lines.push(`${label} — maximized for offensive role`);
       } else {
-        // PROBLEM 4: SP in stats with no threshold IS unspendable, even if the
-        // optimizer physically placed it there via dump-stat allocation.
-        unspendableSp += spVal;
-        lines.push(`${label} — unspendable SP: ${spVal} (no threshold cleared)`);
+        bulkSp += spVal;
+        lines.push(`${label} — allocated to bulk (no threshold of its own)`);
       }
     }
   }
 
-  // Every SP must be accounted for: justified by threshold + unspendable (no
-  // threshold or budget remainder). Sum always equals the displayed total.
-  const totalFromLoop = justifiedSp + unspendableSp;
-  lines.push(`  SP: ${justifiedSp} justified + ${unspendableSp} unspendable = ${totalFromLoop} total`);
+  // Every SP is accounted for: required by a named threshold, or placed into
+  // bulk to spend the remainder. On the team-build path the sum is always 66 —
+  // redistributeToBudget() guarantees it.
+  const totalFromLoop = justifiedSp + bulkSp;
+  lines.push(`  SP: ${justifiedSp} justified + ${bulkSp} allocated to bulk = ${totalFromLoop} total`);
   return lines;
 }
 
@@ -970,10 +1039,22 @@ function buildTeamBuildText(responseBody, team) {
   lines.push(sectionDivider('TEAM ANALYSIS'));
   lines.push(`Type coverage: ${ta.coverage.covered_types.length}/18 types${ta.coverage.every_type_covered ? ' (complete)' : ''}`);
   if (ta.coverage.coverage_gaps.length > 0) {
-    lines.push('Coverage gaps:');
-    for (const gap of ta.coverage.coverage_gaps) {
+    // Gaps are per-Pokemon, not per-type: a dual-typed threat the team hits super
+    // effectively through its SECOND type is not a gap, even when the team has
+    // nothing effective against its first.
+    const GAP_DISPLAY_LIMIT = 8;
+    const shown = ta.coverage.coverage_gaps.slice(0, GAP_DISPLAY_LIMIT);
+    lines.push(`Coverage gaps (${ta.coverage.coverage_gaps.length} Pokemon with no super effective answer):`);
+    for (const gap of shown) {
       lines.push(`  - ${gap.note}`);
     }
+    const hidden = ta.coverage.coverage_gaps.length - shown.length;
+    // Say what was dropped rather than silently truncating — a capped list that
+    // looks complete is worse than a longer one.
+    if (hidden > 0) lines.push(`  - ...and ${hidden} more below ${(shown[shown.length - 1].meta_prevalence * 100).toFixed(1)}% usage`);
+  }
+  if (ta.coverage.weather_dependency_note) {
+    lines.push(`Weather dependency: ${ta.coverage.weather_dependency_note}`);
   }
   if (ta.synergies.length > 0) {
     lines.push('Strong synergies:');
@@ -1006,31 +1087,195 @@ function buildTeamBuildText(responseBody, team) {
         : '';
       lines.push(`${w.type}: ${w.team_members_weak.join(', ')} weak${prevNotes ? ` (${prevNotes})` : ''}`);
       if (w.exploited_by.length > 0) {
-        lines.push(`  Exploited by: ${w.exploited_by.map((e) => `${e.pokemon} (${(e.usage * 100).toFixed(1)}%)`).join(', ')}`);
+        // Names the move, and flags when it is coverage rather than STAB —
+        // Garchomp's Rock Slide is a real Rock threat even though Garchomp is
+        // not a Rock-type, and reading "coverage" tells you the hit lands
+        // without the 1.5x.
+        lines.push(`  Exploited by: ${w.exploited_by.map((e) => {
+          const pct = `${(e.usage * 100).toFixed(1)}%`;
+          if (!e.move) return `${e.pokemon} (${pct})`;
+          return `${e.pokemon} (${pct}, ${e.move}${e.stab ? '' : ' — coverage'})`;
+        }).join(', ')}`);
       }
-      if (w.mitigation) lines.push(`  Mitigation: ${w.mitigation}`);
+      lines.push(...mitigationLines(w, '  '));
+    }
+  }
+  const megaWeaknesses = responseBody.weaknesses.mega_weaknesses || [];
+  if (megaWeaknesses.length > 0) {
+    for (const mw of megaWeaknesses) {
+      lines.push(`Mega exposure — ${mw.pokemon} (${mw.types.join('/')}), the team's irreplaceable member:`);
+      for (const t of mw.weak_to) {
+        const shared = t.shared_with_team.length > 0 ? `, also hits ${t.shared_with_team.join(', ')}` : ', hits only the Mega';
+        const top = t.exploited_by[0];
+        const via = top ? ` — e.g. ${top.pokemon} (${(top.usage * 100).toFixed(1)}%${top.move ? `, ${top.move}` : ''})` : '';
+        lines.push(`  - ${t.type} ${t.multiplier}x${shared}${via}`);
+        lines.push(...mitigationLines(t, '      '));
+      }
     }
   }
   if (responseBody.weaknesses.double_weaknesses.length > 0) {
     lines.push('4x weaknesses:');
     for (const d of responseBody.weaknesses.double_weaknesses) {
-      lines.push(`  - ${d.type}: ${d.team_members.join(', ')}${d.mitigation ? ` (${d.mitigation})` : ''}`);
+      lines.push(`  - ${d.type}: ${d.team_members.join(', ')}`);
+      lines.push(...mitigationLines(d, '    '));
     }
   }
   lines.push('');
 
   lines.push(sectionDivider('ARCHETYPE MATCHUPS'));
   for (const m of responseBody.archetype_matchups) {
-    lines.push(`${m.archetype}: ${m.matchup_rating.toUpperCase()}`);
-    lines.push(`  Key threats: ${m.key_threats.join(', ')}`);
-    lines.push(`  ${m.key_threat_note}`);
-    lines.push(`  Win condition: ${m.win_condition}`);
-    lines.push(`  Lose condition: ${m.lose_condition}`);
-    // FIX 14: Quick recommendations for unfavorable matchups
-    if (m.matchup_rating === 'unfavorable' || m.matchup_rating === 'hard' || m.matchup_rating === 'difficult') {
-      const quickFix = buildQuickFixRecommendation(m, responseBody);
-      if (quickFix) lines.push(`  Quick fix: ${quickFix}`);
+    const led = m.matchup_ledger;
+    const scoreNote = led ? `  [${(led.weighted_score * 100).toFixed(0)}/100 usage-weighted]` : '';
+    lines.push(`${m.archetype}: ${m.matchup_rating.toUpperCase()}${scoreNote}  (${m.meta_team_count} teams in this archetype)`);
+    if (led) {
+      // The ledger is printed so the rating can be argued with rather than
+      // taken on trust: KO / survive / outspeed per threat, weighted by usage.
+      lines.push('  Rating ledger (0.5 OHKO + 0.3 survive + 0.2 outspeed, weighted by usage):');
+      for (const r of led.rows) {
+        const mark = (ok) => (ok ? 'Y' : '-');
+        lines.push(`    ${r.pokemon.padEnd(22)} ${(r.usage * 100).toFixed(1).padStart(5)}%  KO:${mark(r.ohko)}  survive:${mark(r.survives)}  outspeed:${mark(r.speed_ok)}  -> ${r.score.toFixed(2)}`);
+      }
     }
+    lines.push(`  Our key Pokemon: ${(m.our_key_pokemon || []).join(', ')}`);
+
+    lines.push('  Key Threats:');
+    for (const t of m.key_threats || []) {
+      const speed = t.speed != null ? `${t.speed} Spe` : 'Speed unknown';
+      lines.push(`    - ${t.pokemon} (${t.types.join('/')}, ${(t.usage * 100).toFixed(1)}% of ${m.archetype} teams, ${speed}${t.ability ? `, ${t.ability}` : ''}${t.item ? `, ${t.item}` : ''})`);
+      for (const r of t.reasons || []) lines.push(`        ${r}`);
+    }
+
+    // Both lists are ordered most damage first, then by how common the opposing
+    // Pokemon is.
+    lines.push('  Resistances (most damage taken first):');
+    if ((m.resistances || []).length === 0) {
+      lines.push('    - none — nothing on this team resists their primary attacking moves');
+    } else {
+      for (const r of m.resistances) {
+        lines.push(`    - ${r.pokemon}:`);
+        for (const x of r.resists) {
+          const mult = x.multiplier === 0 ? 'immune' : `${x.multiplier}x`;
+          lines.push(`        ${x.target}'s ${x.move} (${x.move_type}, ${mult}): ${x.damage_range} — ${x.attacker_build}, ${(x.target_usage * 100).toFixed(1)}% of ${m.archetype} teams`);
+        }
+      }
+    }
+
+    lines.push('  Counters (most damage first):');
+    const ohkos = m.counters?.ohkos || [];
+    const seOnly = (m.counters?.super_effective || []);
+    if (ohkos.length === 0 && seOnly.length === 0) {
+      const cf = m.counters?.calc_failures || 0;
+      const ca = m.counters?.calc_attempts || 0;
+      // Distinguish "genuinely no answer" from "the calcs did not run" — those
+      // printed identically before, which hid a resolution bug for a full build.
+      lines.push(cf > 0 && cf === ca
+        ? `    - NO DATA — all ${ca} damage calculations failed to resolve; this is a bug, not a matchup result`
+        : '    - none — no OHKO and no super effective coverage against their key threats');
+    } else if ((m.counters?.calc_failures || 0) > 0) {
+      lines.push(`    (${m.counters.calc_failures}/${m.counters.calc_attempts} calcs failed to resolve)`);
+    }
+    // Grouped by OUR Pokemon, mirroring the Resistances layout. A flat list
+    // interleaves six attackers against six targets and is unreadable; grouping
+    // answers "what does this member do here" in one block.
+    const byAttacker = new Map();
+    for (const e of [...ohkos.map((o) => ({ ...o, ohko: true })), ...seOnly.map((x) => ({ ...x, ohko: false }))]) {
+      if (!byAttacker.has(e.pokemon)) byAttacker.set(e.pokemon, []);
+      byAttacker.get(e.pokemon).push(e);
+    }
+    const attackerGroups = [...byAttacker.entries()].map(([pokemon, entries]) => {
+      entries.sort((a, b) => (b.damage_max || 0) - (a.damage_max || 0)
+        || (b.target_usage || 0) - (a.target_usage || 0));
+      return { pokemon, entries };
+    });
+    // Members with the hardest single hit first, same rule as within a group.
+    attackerGroups.sort((a, b) => (b.entries[0].damage_max || 0) - (a.entries[0].damage_max || 0));
+
+    for (const g of attackerGroups) {
+      lines.push(`    - ${g.pokemon}:`);
+      for (const e of g.entries) {
+        const tag = e.ohko ? 'OHKO' : `${e.multiplier}x`;
+        const type = e.move_type ? `, ${e.move_type}` : '';
+        // Which weather this number assumes — never leave a damage figure
+        // unattributed when more than one weather is live.
+        const wx = (e.weathers && e.weathers.length > 0)
+          ? `  [${e.weathers.join(' / ')}]`
+          : (e.weather ? `  [in ${e.weather}]` : '  [no weather]');
+        lines.push(`        ${tag} vs ${e.target}: ${e.move}${type} — ${e.damage_range} vs ${e.target_build}, ${(e.target_usage * 100).toFixed(1)}% of ${m.archetype} teams${wx}`);
+        if (e.coverage) {
+          const c = e.coverage;
+          const worst = c.worst_beaten ? `through ${c.worst_beaten.label} (${c.worst_beaten.range})` : '';
+          const breaks = c.breaks_on ? `; survives on ${c.breaks_on.label} (${c.breaks_on.range})` : '';
+          lines.push(`            KOs ${(c.covered_pct * 100).toFixed(0)}% of ${c.sets_seen} observed sets ${worst}${breaks}`);
+        }
+      }
+    }
+
+    // A condition may carry a second line (an OHKO's KO-likelihood note). Bullet
+    // the first line, indent the rest under it — one \n-joined string stays one
+    // logical condition in the JSON while reading as a block in the text view.
+    const pushCondition = (text) => {
+      const [head, ...rest] = String(text).split('\n');
+      lines.push(`    - ${head}`);
+      for (const extra of rest) lines.push(`        ${extra}`);
+    };
+
+    lines.push('  Lose Condition:');
+    for (const l of m.lose_conditions || []) pushCondition(l);
+
+    lines.push('  Win Condition:');
+    if ((m.win_conditions || []).length === 0) lines.push('    - none identified from the current 6');
+    for (const w of m.win_conditions || []) pushCondition(w);
+
+    const sw = m.possible_swaps;
+    if (sw && (sw.moves.length || sw.items.length || sw.pokemon.length || sw.error)) {
+      lines.push('  Possible Swaps:');
+      if (sw.error) lines.push(`    - swap analysis failed: ${sw.error}`);
+      if (sw.moves.length > 0) {
+        lines.push('    Moves:');
+        for (const x of sw.moves) {
+          lines.push(`      - ${x.pokemon}: ${x.drop} -> ${x.add} (${x.move_type}, ${x.move_power} BP)`);
+          lines.push(`          vs ${x.target}: ${x.damage_range}${x.ohko ? ' OHKO' : ''} — beats current best (${x.replaces_best || 'nothing'} at ${x.replaces_best_damage}%) by ${x.gain.toFixed(1)} points`);
+          lines.push(`          ${x.reason}`);
+        }
+      }
+      if (sw.items.length === 0 && (sw.items_skipped || []).length > 0) {
+        lines.push(`    Items: none — ${sw.items_skipped.join(', ')}`);
+      }
+      if (sw.items.length > 0) {
+        lines.push('    Items:');
+        for (const x of sw.items) {
+          lines.push(`      - ${x.pokemon}: ${x.drop} -> ${x.add}`);
+          lines.push(`          new spread: ${x.new_spread}${x.respread_ran ? '' : '  (WARNING: re-optimisation did not run, spread shown is unchanged)'}`);
+          for (const s2 of x.now_survives) lines.push(`          now survives: ${s2}`);
+          for (const l of x.loses_ohko_on) lines.push(`          loses OHKO on: ${l}`);
+          if (x.loses_ohko_on.length === 0) lines.push('          loses no OHKOs');
+        }
+      }
+      if (sw.pokemon.length > 0) {
+        lines.push('    Pokemon:');
+        for (const x of sw.pokemon) {
+          lines.push(`      - drop ${x.drop}, bring ${x.add} (${x.add_types.join('/')}, ${(x.add_usage * 100).toFixed(1)}% usage${x.add_item ? `, ${x.add_item}` : ''})`);
+          lines.push(`          ${x.reason}`);
+          if ((x.loses || []).length > 0) lines.push(`          dropping ${x.drop} costs: ${x.loses.join('; ')}`);
+        }
+      }
+      // Members the matchup maths wanted to cut but that hold irreplaceable team
+      // roles — named so the absence of a suggestion is explained, not silent.
+      if ((sw.pokemon_protected || []).length > 0) {
+        lines.push('    Not droppable despite a poor matchup here:');
+        for (const p2 of sw.pokemon_protected) lines.push(`      - ${p2}`);
+      }
+      if (sw.bounds) {
+        lines.push(`    (bounds: max ${sw.bounds.max_move_swaps} move / ${sw.bounds.max_item_swaps} item / ${sw.bounds.max_pokemon_swaps} Pokemon swaps; ${sw.bounds.item_candidates_per_member} item candidates per member; ${sw.bounds.pokemon_pool_considered} legal Pokemon considered)`);
+      }
+    }
+
+    if (m.best_team_set) {
+      const b = m.best_team_set;
+      lines.push(`  Best Team Set: ${b.members.join(', ')}${b.mega ? `  (Mega: ${b.mega})` : '  (no Mega available)'}`);
+      lines.push(`    weighted ${(b.score * 100).toFixed(1)} — synergy ${(b.breakdown.synergy * 100).toFixed(0)}, offence ${(b.breakdown.offense * 100).toFixed(0)}, defence ${(b.breakdown.defense * 100).toFixed(0)}, speed ${(b.breakdown.speed * 100).toFixed(0)}, utility ${(b.breakdown.utility * 100).toFixed(0)}`);
+    }
+    lines.push('');
   }
   lines.push('');
 
@@ -1180,7 +1425,27 @@ router.post('/build', async (req, res, next) => {
     // from that provisional set + real top-move weather-setting moves, the
     // FINAL per-Pokemon ability is resolved with the condition filter applied.
     const abilityFrequencies = await Promise.all(teamNames.map((name) => getRealAbilityFrequency(name.toLowerCase())));
-    const provisionalAbilities = abilityFrequencies.map((freq) => resolveRealAbility(freq, new Set())?.ability || null);
+    // The Mega override below (see finalAbilities) has to be applied HERE too,
+    // not only in the second pass. tournament_teams' species_key() falls back to
+    // the base form for Megas, so the scraped frequency data for
+    // Charizard-Mega-Y returns Blaze, not Drought — meaning the provisional pass
+    // that builds teamWeatherContext never saw this team's Sun at all. The
+    // context came out as {Rain} (Pelipper's Drizzle alone), which is why
+    // Weather Ball displayed as "Water-type, assumes our Rain active" on the
+    // Sun setter itself, while analyzeMatchups — which reads resolved
+    // abilities — was calculating damage under Sun. Two halves of the same
+    // response disagreeing about the weather.
+    //
+    // Safe to apply provisionally: this pass exists only to find weather
+    // SETTERS, and setter abilities are never themselves condition-gated (see
+    // the comment above), so seeding it with a Mega's real ability cannot
+    // distort the condition filter applied in the second pass.
+    const megaAbilityFor = (i) => {
+      const row = pokemonRowsByLower[teamNames[i].toLowerCase()];
+      return row && row.name.toLowerCase().includes('-mega') ? (row.ability1 || null) : null;
+    };
+    const provisionalAbilities = abilityFrequencies.map((freq, i) =>
+      megaAbilityFor(i) || resolveRealAbility(freq, new Set())?.ability || null);
     const teamTopMoveNames = enrichedMovesByName.map((moves) => moves.map((m) => m.move));
     const teamWeatherContext = detectTeamWeatherContext(provisionalAbilities, teamTopMoveNames);
     const finalAbilities = abilityFrequencies.map((freq, i) => {
@@ -1357,7 +1622,11 @@ router.post('/build', async (req, res, next) => {
     const weather = analyzeWeather(team);
     const trickRoom = analyzeTrickRoom(team, weather);
     const speedTiers = analyzeSpeedTiers(team, weather);
-    const matchupAnalysis = await analyzeMatchups(team, legalPokemonSet, weather);
+    // all_ohko_opportunities is stripped here so it never reaches the response
+    // body — it exists only to let analyzeWeaknesses look up a KO on a specific
+    // meta attacker without being limited to the display slice.
+    const { all_ohko_opportunities: allOhkoOpportunities, ...matchupAnalysis } =
+      await analyzeMatchups(team, legalPokemonSet, weather);
 
     // FIX 11: coverage move recommendations based on OHKO risk thresholds
     const coverageSuggestions = await suggestCoverageReplacements(team, matchupAnalysis.ohko_risks);
@@ -1369,8 +1638,12 @@ router.post('/build', async (req, res, next) => {
 
     // STEP 7: weaknesses + archetype matchups (FIX 11: key_threats filtered to
     // Pokemon with real presence in this format's usage_stats).
-    const weaknesses = analyzeWeaknesses(team, typeMetaData);
-    const archetypeMatchups = analyzeArchetypeMatchups(team, weather, legalPokemonSet);
+    const weaknesses = await analyzeWeaknesses(team, typeMetaData, teamWeatherContext, allOhkoOpportunities);
+    // Live, data-derived archetype analysis (see archetype_matchups.js). The old
+    // analyzeArchetypeMatchups used a static table whose hardcoded
+    // `key_threat_speed` was printed against whichever threat was listed first —
+    // the source of the impossible "Charizard-Mega-Y (~185 effective Speed)".
+    const archetypeMatchups = await analyzeArchetypeMatchupsLive(team, weather, synergies, legalPokemonSet, { weather: [...(teamWeatherContext || [])][0] || null });
 
     // Simple, disclosed aggregate: equal-weighted average of three already-computed
     // real signals (type-coverage completeness, real synergy-pair count, favorable
