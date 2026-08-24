@@ -488,6 +488,48 @@ function plausibleWeathers(archetypeWeather, team) {
   return out;
 }
 
+// Analytical, not empirical: whether a weather tag belongs on a damage line
+// used to be decided by running the calc under every plausible weather and
+// checking whether the numbers happened to agree — which only works when
+// there are two or more scenarios to compare, and plausibleWeathers() only
+// ever computes a "no weather" baseline when the team has zero weather
+// setters. Any archetype with no weather of its own but a team that runs one
+// (the common case) got exactly one scenario, nothing to compare it against,
+// and every line was tagged whether or not weather did anything — Kowtow
+// Cleave under "our Rain" as much as Weather Ball.
+//
+// Running a second "no weather" pass to get a comparison point would fix it,
+// but that is runtime spent to re-derive something already knowable from the
+// move and the board: whether a given weather CAN change a given attack's
+// number is mechanics, not a measurement.
+const WEATHER_SENSITIVE_TYPE = new Set(['Water', 'Fire']);
+const WEATHER_DERIVED_TYPE_MOVES = new Set(['weather ball', 'terrain pulse']);
+// Fixed base power, but usability itself is weather-gated (Sun/Rain removes
+// the charge turn) — the number on the page is misleading without the tag
+// even though the figure itself would be identical in any other weather.
+const CHARGE_GATED_BY_WEATHER_MOVES = new Set(['solar beam', 'solar blade', 'electro shot']);
+
+/**
+ * Can `weather` change the damage number for this specific attack? Takes the
+ * move's resolved type (post-ability, e.g. Weather Ball already resolved to
+ * Fire/Water/Rock/Ice), its category, and the defender's types.
+ *
+ * Deliberately does NOT check for Swift Swim / Chlorophyll / Sand Rush /
+ * Slush Rush on either side — those change who moves first, not how hard the
+ * hit lands, and a damage-number tag is not the place to disclose a turn-
+ * order fact.
+ */
+function weatherChangesDamage(moveName, moveType, moveCategory, defenderTypes, weather) {
+  if (!weather) return false;
+  const name = lower(moveName);
+  if (WEATHER_DERIVED_TYPE_MOVES.has(name)) return true;
+  if (CHARGE_GATED_BY_WEATHER_MOVES.has(name)) return true;
+  if (moveType && WEATHER_SENSITIVE_TYPE.has(moveType) && (weather === 'Rain' || weather === 'Sun')) return true;
+  if (weather === 'Sand' && moveCategory === 'Special' && (defenderTypes || []).includes('Rock')) return true;
+  if (weather === 'Snow' && moveCategory === 'Physical' && (defenderTypes || []).includes('Ice')) return true;
+  return false;
+}
+
 // --- SWEEPER CLASSIFICATION ---------------------------------------------------
 //
 // Judged on OBSERVED SP INVESTMENT, not base stats.
@@ -934,6 +976,7 @@ async function buildCounters(team, threats, weather, weathers) {
         // One entry per plausible weather. A member that sets its own weather
         // overrides the field for its own attacks (Pelipper's Weather Ball is
         // Water under its own Drizzle regardless of what else is up).
+        const moveRow = await getMoveRowCached(mv.move);
         for (const w of weathers) {
           const memberWeather = weatherForMember(member, w.weather);
           const ourType = resolveTypeFor(mv.move, mv.type, member.ability, memberWeather);
@@ -968,6 +1011,7 @@ async function buildCounters(team, threats, weather, weathers) {
             move_type: ourType,
             weather: memberWeather,
             weather_source: w.source,
+            weather_matters: weatherChangesDamage(mv.move, ourType, moveRow?.category, threatTypes, memberWeather),
             target: threat.pokemon,
             target_usage: threat.usage,
             multiplier: eff,
@@ -1009,33 +1053,24 @@ async function buildCounters(team, threats, weather, weathers) {
   // Collapse duplicates: if a move does the same damage in rain and in sun, one
   // line says so rather than three identical ones.
   const collapse = (list) => {
-    // How many distinct weathers this attacker/move/target triple was calculated
-    // in at all. Needed to tell "same number in all of them" (weather is
-    // irrelevant here, say nothing) from "we only ran one weather".
-    const weatherCount = new Map();
-    for (const e of list) {
-      const t = `${e.pokemon}|${e.move}|${e.target}`;
-      if (!weatherCount.has(t)) weatherCount.set(t, new Set());
-      if (e.weather_source) weatherCount.get(t).add(e.weather_source);
-    }
-
     const byKey = new Map();
     for (const e of list) {
       const key = `${e.pokemon}|${e.move}|${e.target}|${e.damage_range}|${e.move_type}`;
-      if (!byKey.has(key)) { byKey.set(key, { ...e, weathers: [] }); }
+      if (!byKey.has(key)) { byKey.set(key, { ...e, weathers: [], any_weather_matters: false }); }
       const kept = byKey.get(key);
       if (e.weather_source && !kept.weathers.includes(e.weather_source)) kept.weathers.push(e.weather_source);
+      // weatherChangesDamage() was already asked, per scenario, whether THIS
+      // weather could move THIS number — analytically, not by comparing it to
+      // a second run. If none of the scenarios folded into this line could
+      // have mattered, the tag is noise; if any could, show it.
+      if (e.weather_matters) kept.any_weather_matters = true;
     }
 
-    // A weather tag on a number that is the same in every weather is noise that
-    // reads as a claim — "[their Rain / our Sun]" on one line looks like one calc
-    // asserting two contradictory weathers. Only say it when it MATTERS: when
-    // the weathers give different numbers, or when the move's TYPE is
-    // weather-derived (Weather Ball) and so the weather is itself the finding.
+    // A weather tag on a number that could not have depended on weather is
+    // noise that reads as a claim — "[their Rain / our Sun]" on Kowtow Cleave
+    // looks like a finding. Only say it when it MATTERS.
     for (const kept of byKey.values()) {
-      const total = weatherCount.get(`${kept.pokemon}|${kept.move}|${kept.target}`)?.size || 0;
-      const typeIsWeatherDerived = kept.move === 'Weather Ball' || kept.move === 'Terrain Pulse';
-      kept.weather_independent = total > 1 && kept.weathers.length === total && !typeIsWeatherDerived;
+      kept.weather_independent = !kept.any_weather_matters;
     }
     return [...byKey.values()];
   };
