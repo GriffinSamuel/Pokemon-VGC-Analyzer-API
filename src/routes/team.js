@@ -1150,7 +1150,9 @@ function buildTeamBuildText(responseBody, team) {
         }
       }
       if (led.weakest_link) {
-        lines.push(`    weakest link: ${led.weakest_link.pokemon} — dies to ${(led.weakest_link.usage_sum * 100).toFixed(0)}% of this archetype by combined usage`);
+        const wl = led.weakest_link;
+        const combined = Math.min(100, wl.usage_sum * 100);
+        lines.push(`    weakest link: ${wl.pokemon} — dies to ${wl.threat_count} of their 6 most-used (${combined.toFixed(0)}% combined usage, capped at 100)`);
       }
       if (led.calc_failures > 0) {
         lines.push(`    (${led.calc_failures} incoming calcs failed to resolve — grid is thinner than it looks)`);
@@ -1183,6 +1185,28 @@ function buildTeamBuildText(responseBody, team) {
         for (const x of r.resists) {
           const mult = x.multiplier === 0 ? 'immune' : `${x.multiplier}x`;
           lines.push(`        ${x.target}'s ${x.move} (${x.move_type}, ${mult}): ${x.damage_range} — ${x.attacker_build}, ${(x.target_usage * 100).toFixed(1)}% of ${m.archetype} teams`);
+          // Same state-dependent-move treatment as Counters below: a resisted
+          // hit from a ladder move is still a ladder, not a flat number.
+          if (x.ladder) {
+            lines.push(`            base power scales with ${x.ladder.axis}:`);
+            for (const step of x.ladder.steps) {
+              const ko = step.ohko ? '  OHKO' : '';
+              lines.push(`              ${step.note} (${step.bp} BP): ${step.damage_range}${ko}   [likelihood ${step.weight}]`);
+            }
+          }
+          if (x.multi_hit) {
+            const mh = x.multi_hit;
+            lines.push(`            ${mh.note} — headline above is the EXPECTED ${mh.expected_hits} hits`);
+            lines.push(`            guaranteed floor (${mh.guaranteed_min_percent}-${mh.guaranteed_max_percent}%) is what a move swap is judged on`);
+            for (const row of mh.hit_counts || []) {
+              const ko = row.ohko ? '  OHKO' : '';
+              lines.push(`              ${row.hits} hit${row.hits === 1 ? '' : 's'} (${(row.probability * 100).toFixed(1)}%): ${row.min_percent}-${row.max_percent}%${ko}`);
+            }
+          }
+          if (x.bp_unresolved) {
+            lines.push('            WARNING: this move\'s real base power depends on state not modelled here');
+            lines.push(`            (multi-hit or turn state) — the number above assumes ${x.base_power_used} BP and is not reliable`);
+          }
         }
       }
     }

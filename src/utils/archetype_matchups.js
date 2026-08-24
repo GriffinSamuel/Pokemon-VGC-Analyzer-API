@@ -848,15 +848,42 @@ async function buildResistances(team, threats) {
           entry.damage_range = '0% (immune)';
           entry.attacker_build = `${threat.ability || 'no ability'}${threat.item ? ` @ ${threat.item}` : ''}`;
         } else {
-          const dmg = await calcThreatDamage(
-            { name: threat.pokemon, top_item: threat.item, top_ability: threat.ability },
-            moveName, member, null
-          );
+          // A threat's Last Respects is exactly as state-dependent as our own —
+          // buildCounters already gives our outgoing moves the ladder treatment;
+          // an incoming resisted hit from the same move class was falling through
+          // to a flat number with no floor-state pinning and no ladder at all.
+          const attackerEntry = { name: threat.pokemon, top_item: threat.item, top_ability: threat.ability };
+          const ladder = ladderFor(moveName);
+          const dmg = await calcThreatDamage(attackerEntry, moveName, member, null, ladderFloorState(moveName));
           if (!dmg) continue;
+
+          let ladderSteps = null;
+          if (ladder) {
+            ladderSteps = [];
+            for (const step of ladder.steps) {
+              const stepDmg = await calcThreatDamage(attackerEntry, moveName, member, null, step.state);
+              if (!stepDmg) continue;
+              ladderSteps.push({
+                note: step.note,
+                bp: step.bp,
+                weight: step.weight,
+                damage_range: `${stepDmg.min}-${stepDmg.max}%`,
+                ohko: stepDmg.min >= 100,
+              });
+            }
+          }
+
           const spread = await getSpreadCached(lower(threat.pokemon));
           entry.damage_max = dmg.max;
           entry.damage_range = `${dmg.min}-${dmg.max}%`;
           entry.attacker_build = describeDefender(spread, { item: threat.item, ability: threat.ability });
+          entry.ladder = ladderSteps && ladderSteps.length > 0 ? { axis: ladder.axis, steps: ladderSteps } : null;
+          entry.bp_unresolved = dmg.bp_unresolved === true;
+          entry.base_power_used = dmg.base_power_used;
+          entry.sash_prevents_ohko = dmg.sash_prevents_ohko === true;
+          entry.raw_min_percent = dmg.raw_min_percent;
+          entry.raw_max_percent = dmg.raw_max_percent;
+          entry.multi_hit = dmg.multi_hit || null;
         }
         resisted.push(entry);
       }
@@ -1536,7 +1563,8 @@ async function buildExchangeGrid(team, threats, counters, archetype, weatherAnal
       const score = cellMax > 0 ? raw / cellMax : 0;
 
       if (theyOhko) {
-        perMemberDeaths.set(member.pokemon, (perMemberDeaths.get(member.pokemon) || 0) + (threat.usage || 0));
+        const prior = perMemberDeaths.get(member.pokemon) || { usageSum: 0, count: 0 };
+        perMemberDeaths.set(member.pokemon, { usageSum: prior.usageSum + (threat.usage || 0), count: prior.count + 1 });
       }
 
       cells.push({
@@ -1584,10 +1612,15 @@ async function buildExchangeGrid(team, threats, counters, archetype, weatherAnal
       : 'even';
 
   // The single most useful line in the section: which of ours dies to the most
-  // of the archetype, by usage.
+  // of the archetype, by usage. usage_sum is a SUM of independent threats' usage
+  // fractions, not a probability — it can and does exceed 100% when a member
+  // dies to several of the six key threats at once, so it is capped for display
+  // and the count of threats is reported alongside it rather than implied.
   let weakestLink = null;
-  for (const [name, usageSum] of perMemberDeaths.entries()) {
-    if (!weakestLink || usageSum > weakestLink.usage_sum) weakestLink = { pokemon: name, usage_sum: usageSum };
+  for (const [name, d] of perMemberDeaths.entries()) {
+    if (!weakestLink || d.usageSum > weakestLink.usage_sum) {
+      weakestLink = { pokemon: name, usage_sum: d.usageSum, threat_count: d.count };
+    }
   }
 
   return {

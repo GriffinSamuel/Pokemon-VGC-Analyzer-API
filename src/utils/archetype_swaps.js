@@ -71,6 +71,10 @@ const MAX_FIELD_RECOMPUTES = 12;       // before/after lines per field effect gr
 const MAX_BACKFILL_LOSSES = 6;         // irreplaceable losses searched per swap
 const MAX_BACKFILL_RESULTS = 5;        // replacements reported per loss
 const BACKFILL_VERIFY_LIMIT = 3;       // of those, re-verified on a fresh optimised spread
+// A coverage backfill sharing a type with the lost move is not the same as
+// covering anything — Umbreon's Snarl at 13.5-16.2% is not a Dark-coverage
+// replacement just because it is Dark. This is the floor for "does something".
+const COVERAGE_MEANINGFUL_MIN_PERCENT = 30;
 
 // Moves that are never coverage slots — cutting them loses the thing that makes
 // the build work, regardless of what the damage numbers say.
@@ -1429,7 +1433,11 @@ async function searchPoolForOhko(loss, poolNames, weather, exclude) {
     // moves nobody actually runs, and manufactures a KO out of one of them.
     for (const mv of (profile.moves || []).slice(0, 6).filter((m) => (m.power || 0) > 0 && m.type)) {
       const dmg = calcWithField(profile.row, side, loss.defender.row, loss.defender.side, mv.move, weather, null);
-      if (!dmg || dmg.min < 100) continue;
+      // bp_unresolved means the number is a guess at an assumed BP (Assurance,
+      // Retaliate, Beat Up — ally/turn state this calculator does not model),
+      // not a real damage figure. Reporting it as a guaranteed KO is worse than
+      // reporting nothing.
+      if (!dmg || dmg.min < 100 || dmg.bp_unresolved) continue;
       if (!best || dmg.min > best.min) best = { move: mv.move, type: mv.type, frequency: round(mv.frequency || 0, 4), ...dmg };
     }
     if (!best) continue;
@@ -1473,9 +1481,10 @@ async function searchPoolForOhko(loss, poolNames, weather, exclude) {
     });
   }
 
-  found.sort((a, b) => (b.outspeeds === a.outspeeds ? 0 : b.outspeeds ? 1 : -1)
-    || b.damage_min - a.damage_min
-    || b.usage - a.usage);
+  // Speed used to sort ahead of damage, which could put a 100-116% option above
+  // a 149-177.5% one just because the weaker one happened to outspeed. Judged
+  // on guaranteed damage first, per the format owner's call.
+  found.sort((a, b) => b.damage_min - a.damage_min || b.usage - a.usage);
   return { found, searched, profileMisses };
 }
 
@@ -1483,7 +1492,6 @@ async function searchPoolForCoverage(loss, poolNames, defenders, weather, exclud
   const found = [];
   let profileMisses = 0;
   let searched = 0;
-  const reference = defenders[0] || null;
 
   for (const entry of poolNames) {
     if (exclude.has(lower(entry.name))) continue;
@@ -1500,9 +1508,17 @@ async function searchPoolForCoverage(loss, poolNames, defenders, weather, exclud
       nature: profile.spread?.nature || 'Hardy', item: profile.item || '', ability: profile.ability || '',
       sp: sp || {}, ivs: { hp: 31 }, status: selfInflictedStatus(profile.item || '', profile.ability || ''),
     };
-    const dmg = reference
-      ? calcWithField(profile.row, side, reference.row, reference.side, mv.move, weather, null)
-      : null;
+    // "Covers this type" is not "covers anything" — check every key threat, not
+    // an arbitrary first one, and require a real dent on at least one of them.
+    // A shared type with no meaningful damage anywhere is filler, not coverage.
+    let best = null;
+    for (const d of defenders) {
+      const dmg = calcWithField(profile.row, side, d.row, d.side, mv.move, weather, null);
+      if (!dmg || dmg.bp_unresolved) continue;
+      if (!best || dmg.min > best.dmg.min) best = { defender: d, dmg };
+    }
+    if (!best || best.dmg.min < COVERAGE_MEANINGFUL_MIN_PERCENT) continue;
+    const dmg = best.dmg;
     found.push({
       pokemon: profile.name,
       usage: entry.usage,
@@ -1510,11 +1526,11 @@ async function searchPoolForCoverage(loss, poolNames, defenders, weather, exclud
       move: mv.move,
       move_type: mv.type,
       move_observed_frequency: round(mv.frequency || 0, 4),
-      damage_range: dmg ? `${dmg.min}-${dmg.max}%` : null,
-      damage_min: dmg ? dmg.min : null,
-      damage_max: dmg ? dmg.max : null,
-      damage_target: reference ? reference.threat.pokemon : null,
-      ohko: dmg ? dmg.min >= 100 : null,
+      damage_range: `${dmg.min}-${dmg.max}%`,
+      damage_min: dmg.min,
+      damage_max: dmg.max,
+      damage_target: best.defender.threat.pokemon,
+      ohko: dmg.min >= 100,
       spread_source: sp ? 'observed_modal' : 'none',
       spread_label: formatSpread(sp, side.nature),
       nature: side.nature,
@@ -1586,11 +1602,17 @@ async function backfillAnalysis(candidate, dropped, team, defenders, weather, po
       replacements_total: scan.found.length,
       replacements_truncated: top.truncated,
       nothing_found: scan.found.length === 0,
+      // scan.searched is smaller than the bounds line's "256 legal Pokemon" by
+      // design — it excludes the 6 Pokemon already on the team and the
+      // candidate this backfill is being run for, neither of which a backfill
+      // could sensibly suggest. Spelling out the arithmetic here instead of
+      // just printing the smaller number is what makes the two lines read as
+      // agreeing rather than as a discrepancy.
       statement: scan.found.length === 0
         ? (loss.kind === 'ohko'
-          ? `Nothing in the ${scan.searched} legal Pokemon searched guarantees a KO on ${loss.what} from its observed spread — this loss is not backfillable from the pool`
-          : `Nothing in the ${scan.searched} legal Pokemon searched is observed running a damaging ${loss.what} move — this coverage is not backfillable from the pool`)
-        : `${scan.found.length} of the ${scan.searched} legal Pokemon searched cover this; the top ${top.list.length} are listed`,
+          ? `Nothing in the ${scan.searched} legal Pokemon searched (${poolNames.length + team.length} total, minus the current 6 and ${candidate.name}) guarantees a KO on ${loss.what} from its observed spread — this loss is not backfillable from the pool`
+          : `Nothing in the ${scan.searched} legal Pokemon searched (${poolNames.length + team.length} total, minus the current 6 and ${candidate.name}) is observed running a damaging ${loss.what} move — this coverage is not backfillable from the pool`)
+        : `${scan.found.length} of the ${scan.searched} legal Pokemon searched (${poolNames.length + team.length} total, minus the current 6 and ${candidate.name}) cover this; the top ${top.list.length} are listed`,
     });
   }
 
