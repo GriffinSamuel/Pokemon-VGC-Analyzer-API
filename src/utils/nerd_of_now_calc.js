@@ -104,6 +104,10 @@ function calcStatNonHP(base, sp, natureMult) {
 function getNatureMult(nature, statName) {
   const n = NATURE_TABLE[nature];
   if (!n) return 1.0;
+  // Neutral natures (Hardy, Docile, Serious, Bashful, Quirky) encode the same
+  // stat as both "boosted" and "hindered" — checked first so neither branch
+  // below fires and silently grants +10%.
+  if (n[0] === n[1]) return 1.0;
   if (n[0] === statName) return 1.1;
   if (n[1] === statName) return 0.9;
   return 1.0;
@@ -677,17 +681,99 @@ function defenderHpRatio(defender) {
  * the sentinel lets callers refuse to build a recommendation on the move instead
  * of quietly assuming the first turn of a sequence.
  *
- * Multi-hit moves are here for a different reason: this calculator has no
- * multi-hit engine at all, so treating them as single-hit understates them by
- * the hit count.
+ * The multi-hit moves that used to sit in this Set are gone from it: they were
+ * never unknowable, they were unimplemented. See MULTI_HIT_MOVES below.
  */
 const UNMODELLED_VARIABLE_BP = new Set([
-  'fury cutter', 'rollout', 'ice ball', 'echoed voice', 'round',   // consecutive-use
-  'assurance', 'retaliate', 'beat up',                             // ally/turn state
-  'triple axel', 'triple kick', 'population bomb', 'bullet seed',  // multi-hit
-  'rock blast', 'icicle spear', 'scale shot', 'water shuriken',
-  'dual wingbeat', 'double hit', 'tail slap', 'arm thrust',
+  'assurance', 'retaliate', 'beat up',   // ally/turn state
 ]);
+
+/**
+ * Multi-hit moves, by family.
+ *
+ * These were listed as UNMODELLED_VARIABLE_BP because there was no hit-count
+ * engine, so a ten-hit Population Bomb was reported at one hit — a tenth of its
+ * real damage — and Bullet Seed at under a third. Nothing errored; the moves
+ * just came out looking too weak to keep, in every KO threshold and every
+ * move-replacement suggestion built on those numbers.
+ *
+ *   family 'variable' — the 2-5 hit family. Count is rolled, base power is flat.
+ *   family 'fixed'    — always `hits` times. No roll, no accuracy gate.
+ *   family 'accuracy' — accuracy is checked BEFORE EACH HIT and the move stops
+ *                       at the first miss, so the count is a truncated geometric
+ *                       draw and `hits` is only the ceiling. `bpPerHit` is set
+ *                       when base power also escalates across the hits.
+ *
+ * `bpPerHit` is the reason resolveVariableBP still refuses to answer without a
+ * stated hit index: Triple Axel is 20 BP on hit one and 60 on hit three, so
+ * "the base power of Triple Axel" has no single correct value to hand back.
+ */
+const MULTI_HIT_MOVES = {
+  // 2-5 hits: 2 (35%), 3 (35%), 4 (15%), 5 (15%).
+  'bullet seed': { family: 'variable' },
+  'rock blast': { family: 'variable' },
+  'icicle spear': { family: 'variable' },
+  'pin missile': { family: 'variable' },
+  'scale shot': { family: 'variable' },
+  'tail slap': { family: 'variable' },
+  'arm thrust': { family: 'variable' },
+  'water shuriken': { family: 'variable' },
+  'bone rush': { family: 'variable' },
+  'comet punch': { family: 'variable' },
+  'double slap': { family: 'variable' },
+  'fury attack': { family: 'variable' },
+  'fury swipes': { family: 'variable' },
+  'spike cannon': { family: 'variable' },
+
+  // Fixed count. Skill Link and Loaded Dice do nothing to these — they already
+  // hit their full count every time.
+  'dual wingbeat': { family: 'fixed', hits: 2 },
+  'double hit': { family: 'fixed', hits: 2 },
+  'twineedle': { family: 'fixed', hits: 2 },
+  'double kick': { family: 'fixed', hits: 2 },
+  'gear grind': { family: 'fixed', hits: 2 },
+  'dragon darts': { family: 'fixed', hits: 2 },
+  'tachyon cutter': { family: 'fixed', hits: 2 },
+  'triple dive': { family: 'fixed', hits: 3 },
+
+  // Per-hit accuracy roll.
+  'triple axel': { family: 'accuracy', hits: 3, accuracy: 90, bpPerHit: [20, 40, 60] },
+  'triple kick': { family: 'accuracy', hits: 3, accuracy: 90, bpPerHit: [10, 20, 30] },
+  'population bomb': { family: 'accuracy', hits: 10, accuracy: 90 },
+};
+
+// The 2-5 roll. Expected value is 2(.35) + 3(.35) + 4(.15) + 5(.15) = 3.1, NOT
+// the 3.2 of the pre-Gen-V distribution and not the 3.3 that gets quoted around
+// this feature. expected_hits is summed from this table rather than written down
+// as a literal, so the two can never disagree.
+const VARIABLE_HIT_DISTRIBUTION = [
+  { hits: 2, probability: 0.35 },
+  { hits: 3, probability: 0.35 },
+  { hits: 4, probability: 0.15 },
+  { hits: 5, probability: 0.15 },
+];
+
+// Loaded Dice: 4 or 5, evenly. Expected 4.5.
+const LOADED_DICE_DISTRIBUTION = [
+  { hits: 4, probability: 0.5 },
+  { hits: 5, probability: 0.5 },
+];
+
+/**
+ * Consecutive-use moves, resolved when the caller states which turn of the
+ * sequence it is asking about.
+ *
+ * `consecutiveUses` is 1 for the first use. These are only unresolvable when
+ * nobody says which turn they mean — and a tool that walks the whole sequence
+ * and weights it by how likely each turn is CAN say. Fury Cutter is 40 BP on
+ * turn one and 160 by turn four; both are true, and neither is "the" answer.
+ */
+const CONSECUTIVE_USE_BP = {
+  'fury cutter': (n) => Math.min(160, 40 * Math.pow(2, n - 1)),
+  'rollout': (n) => Math.min(480, 30 * Math.pow(2, n - 1)),
+  'ice ball': (n) => Math.min(480, 30 * Math.pow(2, n - 1)),
+  'echoed voice': (n) => Math.min(200, 40 * n),
+};
 
 function resolveVariableBP(move, attacker, defender) {
   const name = (move.name || '').toLowerCase();
@@ -697,6 +783,35 @@ function resolveVariableBP(move, attacker, defender) {
   const defWeight = defender.weight || weightOf(defender.name);
 
   if (UNMODELLED_VARIABLE_BP.has(name)) return UNRESOLVED_BP;
+
+  // Multi-hit family. Base power here is a PER-HIT quantity, so the honest
+  // answer depends on which hit is being asked about — the same contract as
+  // consecutiveUses below, and for the same reason. Handing back hit one's 20 BP
+  // as "Triple Axel's base power" is how a 120-BP-equivalent move would go on
+  // being scored as a 20 BP one; the hit-count engine states the index, and
+  // anyone who does not state it gets the sentinel instead of a plausible
+  // number. Flat-BP multi-hit moves return null (use the table BP) once the
+  // index is stated, because for them only the COUNT varies.
+  if (MULTI_HIT_MOVES[name]) {
+    const hitIndex = attacker.multiHitIndex;
+    if (hitIndex == null || hitIndex < 1) return UNRESOLVED_BP;
+    const perHit = MULTI_HIT_MOVES[name].bpPerHit;
+    if (!perHit) return null;
+    return perHit[Math.min(Math.floor(hitIndex), perHit.length) - 1];
+  }
+
+  // Consecutive-use family: resolvable once the turn is stated, unresolved when
+  // it is not. Never silently first-turn.
+  if (CONSECUTIVE_USE_BP[name]) {
+    const n = attacker.consecutiveUses;
+    if (n == null || n < 1) return UNRESOLVED_BP;
+    return CONSECUTIVE_USE_BP[name](Math.floor(n));
+  }
+  // Round doubles when an ally has already used it this turn.
+  if (name === 'round') {
+    if (attacker.allyUsedRound == null) return UNRESOLVED_BP;
+    return attacker.allyUsedRound ? 120 : 60;
+  }
 
   // Last Respects: 50 + (50 × each ally that has fainted)
   if (name === 'last respects') {
@@ -916,6 +1031,138 @@ function resolveVariableBP(move, attacker, defender) {
 }
 
 // =============================================================================
+// 11C. MULTI-HIT ENGINE — how many times the move connects
+// =============================================================================
+
+/**
+ * Wide Lens: accuracy x1.1, capped at 100.
+ *
+ * This is the ONLY place accuracy enters the calculator, and deliberately so.
+ * Whole-move accuracy (Rock Blast's 90%) is not modelled: it scales every
+ * outcome by the same factor and belongs to the caller's win-rate maths, not to
+ * a damage range. Per-hit accuracy is different — it decides the HIT COUNT, so
+ * for Triple Axel, Triple Kick and Population Bomb it is part of the damage.
+ */
+function effectiveHitAccuracy(baseAccuracy, item) {
+  if ((item || '') === 'Wide Lens') return Math.min(100, baseAccuracy * 1.1);
+  return baseAccuracy;
+}
+
+/**
+ * Hit-count distribution for a move that re-rolls accuracy before every hit and
+ * stops at the first miss. With per-hit probability p and a ceiling of n hits:
+ *   P(k) = p^k * (1 - p)  for k < n,  P(n) = p^n
+ *
+ * k = 0 is a real outcome and is included. Dropping it would renormalise the
+ * rest upward and quietly inflate the expectation — the exact error that makes
+ * Population Bomb look like a ten-hit move. At 90% per hit its expectation is
+ * sum(0.9^k, k=1..10) = 5.86 hits, not 10 and not the 6.5 that gets quoted.
+ */
+function accuracyHitDistribution(maxHits, p) {
+  const dist = [];
+  for (let k = 0; k < maxHits; k++) {
+    dist.push({ hits: k, probability: Math.pow(p, k) * (1 - p) });
+  }
+  dist.push({ hits: maxHits, probability: Math.pow(p, maxHits) });
+  return dist.filter(d => d.probability > 0);
+}
+
+/**
+ * Resolve a move's hit-count distribution.
+ *
+ * Returns null for every single-hit move — that is the signal for CalcDamage to
+ * take its original path untouched — or a descriptor:
+ *   { minHits, maxHits, swapHits, expectedHits, distribution, bpPerHit, note }
+ *
+ * @param {Object} move - { name }
+ * @param {Object} attacker - { ability, item }
+ */
+function resolveMultiHit(move, attacker) {
+  const name = ((move && move.name) || '').toLowerCase();
+  const entry = MULTI_HIT_MOVES[name];
+  if (!entry) return null;
+
+  const holder = attacker || {};
+  const hasSkillLink = (holder.ability || '') === 'Skill Link';
+  const hasLoadedDice = (holder.item || '') === 'Loaded Dice';
+
+  let distribution;
+  let note;
+  // The "expected N" clause is earned, not automatic. Appending it to whatever
+  // note came out of the branches produced "4-5 hits (Loaded Dice), expected
+  // 4.5" for Population Bomb — true, but Population Bomb is an ACCURACY-family
+  // move whose per-hit rolls Loaded Dice has just removed, so the clause read as
+  // though the accuracy gate were still deciding the count.
+  let appendExpected = false;
+
+  if (entry.family === 'variable') {
+    if (hasSkillLink) {
+      distribution = [{ hits: 5, probability: 1 }];
+      note = '5 hits (Skill Link)';
+    } else if (hasLoadedDice) {
+      distribution = LOADED_DICE_DISTRIBUTION.map(d => ({ ...d }));
+      note = '4-5 hits (Loaded Dice)';
+    } else {
+      distribution = VARIABLE_HIT_DISTRIBUTION.map(d => ({ ...d }));
+    }
+  } else if (entry.family === 'fixed') {
+    distribution = [{ hits: entry.hits, probability: 1 }];
+    note = `${entry.hits} hits`;
+  } else {
+    // Per-hit accuracy. Loaded Dice removes those rolls entirely — that is its
+    // whole function on Population Bomb — leaving 4-5 hits where the ceiling
+    // allows it and the ceiling itself where it does not. Triple Axel and
+    // Triple Kick cap at 3, so Loaded Dice makes them a guaranteed 3.
+    if (hasLoadedDice) {
+      if (entry.hits >= 5) {
+        distribution = LOADED_DICE_DISTRIBUTION.map(d => ({ ...d }));
+        note = '4-5 hits (Loaded Dice)';
+      } else {
+        distribution = [{ hits: entry.hits, probability: 1 }];
+        note = `${entry.hits} hits (Loaded Dice, no accuracy checks)`;
+      }
+    } else {
+      const acc = effectiveHitAccuracy(entry.accuracy, holder.item);
+      distribution = accuracyHitDistribution(entry.hits, acc / 100);
+      note = `${entry.hits} hits at ${Math.round(acc * 10) / 10}% accuracy each`;
+      appendExpected = true;
+    }
+  }
+
+  let expectedHits = 0;
+  for (const d of distribution) expectedHits += d.hits * d.probability;
+  expectedHits = Math.round(expectedHits * 100) / 100;
+
+  const counts = distribution.map(d => d.hits);
+  const minHits = Math.min(...counts);
+  const maxHits = Math.max(...counts);
+
+  // The hit count a move-replacement recommendation is allowed to lean on.
+  // Four, clamped into what the move can actually do. That one rule produces
+  // every number the spec calls for without a per-move special case: 4 for the
+  // 2-5 family, 2 for Dual Wingbeat, 3 for Triple Dive and Triple Axel (their
+  // ceiling), 5 under Skill Link, and 4 for Population Bomb — whose ceiling of
+  // 10 would be the opposite of conservative.
+  const swapHits = Math.min(Math.max(4, minHits), maxHits);
+
+  if (!note) {
+    note = `${minHits}-${maxHits} hits, expected ${Math.round(expectedHits * 10) / 10}`;
+  } else if (appendExpected) {
+    note += `, expected ${Math.round(expectedHits * 10) / 10}`;
+  }
+
+  return {
+    minHits,
+    maxHits,
+    swapHits,
+    expectedHits,
+    distribution,
+    bpPerHit: entry.bpPerHit || null,
+    note,
+  };
+}
+
+// =============================================================================
 // 12. MAIN CALCULATION PIPELINE
 // =============================================================================
 
@@ -1123,11 +1370,14 @@ function CalcDamage(opts) {
     maxHP: attacker.maxHP,
     side: attacker.side,
     timesHit: attacker.timesHit,
+    consecutiveUses: attacker.consecutiveUses,
+    allyUsedRound: attacker.allyUsedRound,
     happiness: attacker.happiness,
     stockpile: attacker.stockpile,
     movePP: attacker.movePP,
     remainingPP: attacker.remainingPP,
     naturalGiftPower: attacker.naturalGiftPower,
+    multiHitIndex: attacker.multiHitIndex,
   };
 
   const defenderFull = {
@@ -1146,12 +1396,87 @@ function CalcDamage(opts) {
     hpFraction: defender.hpFraction,
   };
 
-  // Run calculation
-  const result = calcSingleMove(attackerFull, defenderFull, moveObj, field);
+  // Run calculation.
+  //
+  // The hit count is resolved BEFORE the damage call because the two are
+  // coupled: resolveVariableBP will not hand back a base power for Triple Axel
+  // without a stated hit index, so a multi-hit move calculated the old way would
+  // now come back flagged bp_unresolved on a path that resolves it perfectly.
+  const multiHit = resolveMultiHit(moveObj, attackerFull);
+  const result = calcSingleMove(
+    multiHit ? Object.assign({}, attackerFull, { multiHitIndex: 1 }) : attackerFull,
+    defenderFull, moveObj, field
+  );
 
-  let minPercent = result.minPercent;
-  let maxPercent = result.maxPercent;
   const maxHP = defenderStats.hp;
+  const pct = (dmg) => Math.round((dmg / maxHP) * 1000) / 10;
+
+  // --- Multi-hit aggregation ---------------------------------------------------
+  // cumMin[k] / cumMax[k] are the damage after exactly k hits. The game floors
+  // each hit independently, so the k-hit floor is k minimum rolls SUMMED — not
+  // one minimum roll multiplied by k, which drifts by up to k-1 points and is
+  // enough to move a KO threshold in a system built on exact boundaries.
+  let multiHitOut = null;
+  let expectedMinDamage = null;
+  let expectedMaxDamage = null;
+  if (multiHit) {
+    const cumMin = [0];
+    const cumMax = [0];
+    for (let i = 1; i <= multiHit.maxHits; i++) {
+      // Only escalating-BP moves need a fresh calculation per hit. For every
+      // other multi-hit move each hit is identical, and re-running the whole
+      // pipeline ten times for Population Bomb inside a team-wide loop would be
+      // pure waste.
+      const hit = (i === 1 || !multiHit.bpPerHit)
+        ? result
+        : calcSingleMove(Object.assign({}, attackerFull, { multiHitIndex: i }), defenderFull, moveObj, field);
+      cumMin[i] = cumMin[i - 1] + Math.round(hit.minDamage);
+      cumMax[i] = cumMax[i - 1] + Math.round(hit.maxDamage);
+    }
+
+    // Expected damage is summed over the DISTRIBUTION, not computed from the
+    // expected hit count. For flat-BP moves the two agree; for Triple Axel they
+    // do not, because its hits are worth 20/40/60 BP and the ones most likely to
+    // be missed are the expensive ones at the end.
+    let expMin = 0;
+    let expMax = 0;
+    const hitCounts = multiHit.distribution.map(d => {
+      expMin += d.probability * cumMin[d.hits];
+      expMax += d.probability * cumMax[d.hits];
+      return {
+        hits: d.hits,
+        probability: Math.round(d.probability * 10000) / 10000,
+        min_percent: pct(cumMin[d.hits]),
+        max_percent: pct(cumMax[d.hits]),
+        ohko: cumMin[d.hits] >= maxHP,
+      };
+    });
+
+    expectedMinDamage = Math.round(expMin);
+    expectedMaxDamage = Math.round(expMax);
+
+    multiHitOut = {
+      hit_counts: hitCounts,
+      expected_hits: multiHit.expectedHits,
+      expected_min_percent: pct(expMin),
+      expected_max_percent: pct(expMax),
+      swap_min_percent: pct(cumMin[multiHit.swapHits]),
+      swap_max_percent: pct(cumMax[multiHit.swapHits]),
+      guaranteed_min_percent: pct(cumMin[multiHit.minHits]),
+      guaranteed_max_percent: pct(cumMax[multiHit.minHits]),
+      note: multiHit.note,
+    };
+  }
+
+  // The top-level figures become the EXPECTED-hits damage for a multi-hit move.
+  // Every consumer in this codebase reads minPercent/maxPercent and, until the
+  // engine above existed, got one hit's worth for a move that lands three or
+  // more — so Bullet Seed and Population Bomb were scored as though they were
+  // the weakest moves on the set. Single-hit moves are byte-for-byte unchanged.
+  let minPercent = multiHitOut ? multiHitOut.expected_min_percent : result.minPercent;
+  let maxPercent = multiHitOut ? multiHitOut.expected_max_percent : result.maxPercent;
+  const baseMinDamage = multiHitOut ? expectedMinDamage : Math.round(result.minDamage);
+  const baseMaxDamage = multiHitOut ? expectedMaxDamage : Math.round(result.maxDamage);
 
   // --- Focus Sash --------------------------------------------------------------
   // Not a damage modifier: a guarantee that a single hit from full HP cannot KO.
@@ -1162,13 +1487,20 @@ function CalcDamage(opts) {
   // every consumer in this codebase asks "is min >= 100" to decide OHKO. Capping
   // makes all of them correct without each having to know about the item; the
   // uncapped figures stay available as raw_min_percent / raw_max_percent.
-  const sashApplies = (defender.item || '') === 'Focus Sash'
+  //
+  // Multi-hit moves are excluded outright. Sash only triggers from FULL HP, so
+  // the best it can do against one is survive hit one at 1 HP — and then hit two
+  // kills. Applying the cap here would have reported Bullet Seed as non-lethal
+  // into an item that does not stop it, which is a worse answer than the one
+  // this block was written to fix.
+  const sashApplies = !multiHitOut
+    && (defender.item || '') === 'Focus Sash'
     && defender.isFullHP !== false
     && Math.round(result.minDamage) >= maxHP;
   const rawMinPercent = minPercent;
   const rawMaxPercent = maxPercent;
-  let effectiveMinDamage = Math.round(result.minDamage);
-  let effectiveMaxDamage = Math.round(result.maxDamage);
+  let effectiveMinDamage = baseMinDamage;
+  let effectiveMaxDamage = baseMaxDamage;
   if (sashApplies) {
     effectiveMinDamage = maxHP - 1;
     effectiveMaxDamage = maxHP - 1;
@@ -1184,7 +1516,8 @@ function CalcDamage(opts) {
   const itemNote = attacker.item ? attacker.item + ' ' : '';
   const natureNote = attacker.nature && attacker.nature !== 'Hardy' ? (attacker.nature.includes('+') ? '' : (natureToModifier(attacker.nature) || '')) : '';
   const weatherNote = weather ? ` in ${weather}` : '';
-  const notes = `${natureNote}${itemNote}${abilityNote}${move.name} vs. ${defender.name}: ${Math.round(result.minDamage)}-${Math.round(result.maxDamage)} (${minPercent} - ${maxPercent}%) -- ${koTier || 'not a guaranteed KO'}${weatherNote}`;
+  const hitNote = multiHitOut ? ` [${multiHitOut.note}]` : '';
+  const notes = `${natureNote}${itemNote}${abilityNote}${move.name} vs. ${defender.name}: ${baseMinDamage}-${baseMaxDamage} (${minPercent} - ${maxPercent}%) -- ${koTier || 'not a guaranteed KO'}${weatherNote}${hitNote}`;
 
   return {
     minPercent,
@@ -1196,12 +1529,14 @@ function CalcDamage(opts) {
     // Variable-BP disclosure — see UNRESOLVED_BP.
     bp_unresolved: result.bp_unresolved === true,
     base_power_used: result.base_power_used,
+    // Hit-count disclosure — null for every single-hit move. See MULTI_HIT_MOVES.
+    multi_hit: multiHitOut,
     // Focus Sash disclosure: what the hit would have done without it.
     sash_prevents_ohko: sashApplies,
     raw_min_percent: rawMinPercent,
     raw_max_percent: rawMaxPercent,
-    raw_min_damage: Math.round(result.minDamage),
-    raw_max_damage: Math.round(result.maxDamage),
+    raw_min_damage: baseMinDamage,
+    raw_max_damage: baseMaxDamage,
     // Raw intermediate values for debugging
     _attackerStats: attackerStats,
     _defenderStats: defenderStats,
@@ -1277,4 +1612,8 @@ module.exports = {
   applyFinalMods,
   applyRandomFactor,
   getMoveData,
+  // Exported so the hit-count distribution can be asserted directly rather than
+  // only through a damage number, which hides which half of the pair is wrong.
+  resolveMultiHit,
+  MULTI_HIT_MOVES,
 };
