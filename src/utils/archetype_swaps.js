@@ -28,9 +28,19 @@
 
 const pool = require('../db/pool');
 const { effectivenessAgainst } = require('./typeChart');
-const { getMostCommonSpread, getCommonItems, getSpeciesRow } = require('./ev_observations');
-const { damagePercentRange } = require('./team_analyzer');
+const { getMostCommonSpread, getCommonSpreads, getCommonItems, getSpeciesRow } = require('./ev_observations');
+const { damagePercentRange, effectiveSpeed, selfInflictedStatus } = require('./team_analyzer');
 const { getOrComputeEvolutionarySpread } = require('./ev_optimizer');
+// Reached directly, not through team_analyzer's damagePercentRange, for ONE
+// reason: damagePercentRange never forwards a `field` object to the calculator
+// and has no way to express a -1 Attack stage. Screens, Friend Guard and
+// Intimidate are therefore unreachable through it, and a swap argued on
+// "brings Reflect" with no number attached is the note-instead-of-a-calc that
+// this section is supposed to stop producing.
+const { CalcDamage, getMoveData, buildStatsFromSP } = require('./nerd_of_now_calc');
+const { calcStat, natureMultiplierFor } = require('./stat_formula');
+const { getAbilityFrequency } = require('./speed_context');
+const { round } = require('./format');
 
 const lower = (s) => String(s || '').toLowerCase();
 
@@ -39,10 +49,28 @@ const MAX_MOVE_SWAPS = 2;
 const MAX_ITEM_SWAPS = 2;
 const MAX_POKEMON_SWAPS = 2;
 const ITEM_CANDIDATES_PER_MEMBER = 3;
-const POKEMON_CANDIDATE_POOL = 40;
+// No cap. This was 40 — a `LIMIT 40` on usage_stats ordered by usage, which the
+// output then labelled "40 legal Pokemon considered". The format has 256. So 216
+// legal Pokemon, 84% of Regulation M-B, were never considered as a swap in any
+// archetype, and the label made that truncation read as a fact about the format
+// rather than a bound we chose. `getLegalPokemonSet()` was already computing the
+// real set and being passed all the way down here — buildSwaps just never
+// destructured it, so it arrived and was dropped.
+const POKEMON_CANDIDATE_POOL = null;
 const LEARNSET_SHORTLIST = 15;   // candidates real-calced per member, by estimate
 const MIN_DAMAGE_GAIN = 15;      // percentage points a replacement must add
 const HEAVY_DAMAGE_PCT = 70;     // "this member is under real pressure here"
+
+// Pokemon-swap enrichment bounds. Every one of these truncates something, so
+// every one of them has a matching `*_truncated` count in the output. A capped
+// list that renders identically to a complete one is the failure this project
+// already shipped once as "40 legal Pokemon considered".
+const POKEMON_REALCALC_SHORTLIST = 12; // type-scored candidates given a full real evaluation
+const MAX_DELTA_LINES = 8;             // per delta list (gains/loses/survives/vulnerable)
+const MAX_FIELD_RECOMPUTES = 12;       // before/after lines per field effect group
+const MAX_BACKFILL_LOSSES = 6;         // irreplaceable losses searched per swap
+const MAX_BACKFILL_RESULTS = 5;        // replacements reported per loss
+const BACKFILL_VERIFY_LIMIT = 3;       // of those, re-verified on a fresh optimised spread
 
 // Moves that are never coverage slots — cutting them loses the thing that makes
 // the build work, regardless of what the damage numbers say.
@@ -90,6 +118,113 @@ const WEATHER_ABILITIES = { drizzle: 'Rain', drought: 'Sun', 'sand stream': 'San
 const learnsetCache = new Map();
 const respreadCache = new Map();
 const candidateProfileCache = new Map();
+const moveRowCache = new Map();
+const observedMovesCache = new Map();
+const observedAbilityCache = new Map();
+const investmentCache = new Map();
+const candidateBuildCache = new Map();
+const threatSpeedCache = new Map();
+const knowsMoveCache = new Map();
+
+async function getMoveRow(moveName) {
+  const key = lower(moveName);
+  if (moveRowCache.has(key)) return moveRowCache.get(key);
+  const { rows } = await pool.query(
+    'SELECT name, type, category, power FROM moves WHERE LOWER(name) = $1 LIMIT 1', [key]
+  ).catch(() => ({ rows: [] }));
+  const row = rows[0] || null;
+  moveRowCache.set(key, row);
+  return row;
+}
+
+/**
+ * What a species is actually OBSERVED to run, from tournament_teams — the same
+ * `pokemon->attacks` JSONB that archetype_matchups.js builds its per-archetype
+ * move distributions from, but keyed by species across the whole dataset rather
+ * than per archetype (this file cannot call into archetype_matchups.js, which
+ * requires it).
+ *
+ * This is the source of truth for "what does this candidate bring", deliberately
+ * in preference to its learnset: a learnset says Sableye CAN run Reflect, only
+ * the tournament data says whether anyone does.
+ */
+async function observedMovesFor(name) {
+  const key = lower(name);
+  if (observedMovesCache.has(key)) return observedMovesCache.get(key);
+  const fetch = async (n) => {
+    const { rows } = await pool.query(
+      `SELECT a.move_name AS move, COUNT(*)::int AS count
+         FROM tournament_teams t,
+              jsonb_array_elements(t.pokemon) p,
+              jsonb_array_elements_text(p->'attacks') AS a(move_name)
+        WHERE LOWER(COALESCE(p->>'normalizedName', p->>'name')) = $1
+        GROUP BY a.move_name
+        ORDER BY count DESC`,
+      [n]
+    ).catch(() => ({ rows: [] }));
+    return rows;
+  };
+  let rows = await fetch(key);
+  // Same base-form fallback observedItemsFor() uses, and for the same reason:
+  // alternate and Mega forms are recorded under the base name often enough that
+  // an empty result here is usually a naming miss, not a Pokemon nobody plays.
+  if (rows.length === 0 && key.includes('-')) rows = await fetch(key.split('-')[0]);
+
+  const total = rows.reduce((sum, r) => sum + r.count, 0);
+  const out = [];
+  for (const r of rows) {
+    const row = await getMoveRow(r.move);
+    out.push({
+      move: row?.name || r.move,
+      type: row?.type || null,
+      category: row?.category || null,
+      power: row?.power || 0,
+      frequency: total > 0 ? r.count / total : 0,
+    });
+  }
+  observedMovesCache.set(key, out);
+  return out;
+}
+
+/** Most common observed ability, falling back to the species' first ability. */
+async function observedAbilityFor(name, row) {
+  const key = lower(name);
+  if (observedAbilityCache.has(key)) return observedAbilityCache.get(key);
+  let dist = await getAbilityFrequency(key).catch(() => []);
+  if (dist.length === 0 && key.includes('-')) {
+    dist = await getAbilityFrequency(key.split('-')[0]).catch(() => []);
+  }
+  // A Mega's ability is fixed by the form, so the pokemon table wins over the
+  // scraped value — the same correction archetype_matchups.js applies, for the
+  // same documented reason (tournament_teams records the BASE form's ability).
+  const ability = /-mega/i.test(key) ? (row?.ability1 || null) : (dist[0]?.ability || row?.ability1 || null);
+  observedAbilityCache.set(key, ability);
+  return ability;
+}
+
+/** Does this species have this move in its learnset at all (status moves included)? */
+async function knowsMove(speciesName, moveName) {
+  const key = `${lower(speciesName)}|${lower(moveName)}`;
+  if (knowsMoveCache.has(key)) return knowsMoveCache.get(key);
+  const tryFetch = async (n) => {
+    const { rows } = await pool.query(
+      `SELECT 1
+         FROM moves m
+         JOIN pokemon_moves pm ON pm.move_id = m.id
+         JOIN pokemon p ON p.id = pm.pokemon_id
+        WHERE LOWER(p.name) = $1 AND LOWER(m.name) = $2
+        LIMIT 1`,
+      [n, lower(moveName)]
+    ).catch(() => ({ rows: [] }));
+    return rows.length > 0;
+  };
+  let found = await tryFetch(lower(speciesName));
+  if (!found && lower(speciesName).includes('-mega')) {
+    found = await tryFetch(lower(speciesName).replace(/-mega(-[xy])?$/, ''));
+  }
+  knowsMoveCache.set(key, found);
+  return found;
+}
 
 async function getLearnset(speciesName) {
   const key = lower(speciesName);
@@ -465,6 +600,291 @@ async function buildItemSwaps(team, threats, weather, fieldOpts) {
   return { suggestions: suggestions.slice(0, MAX_ITEM_SWAPS), skipped };
 }
 
+// --- FIELD-AWARE CALCULATION -------------------------------------------------
+
+function baseStatsOf(row) {
+  return { hp: row.hp, atk: row.atk, def: row.def, spa: row.spa, spd: row.spd, spe: row.spe };
+}
+
+/**
+ * damagePercentRange, plus the field state it cannot express.
+ *
+ * Argument construction is deliberately identical to team_analyzer.js's
+ * damagePercentRange so that a `field: null` call here and a damagePercentRange
+ * call there are the same calculation — the before/after pairs in the field
+ * section are both produced by THIS function precisely so that "before" is never
+ * a differently-built number being compared against "after".
+ *
+ * `field` accepts { isReflect, isLightScreen, isAuroraVeil }; Friend Guard rides
+ * on defenderSide.isFriendGuard, which is where CalcDamage reads it.
+ */
+function calcWithField(attackerRow, attackerSide, defenderRow, defenderSide, moveName, weather, field) {
+  try {
+    const moveData = getMoveData(moveName);
+    const result = CalcDamage({
+      attacker: {
+        name: attackerRow.name,
+        nature: attackerSide.nature || 'Hardy',
+        sp: attackerSide.sp || {},
+        item: attackerSide.item || '',
+        ability: attackerSide.ability || attackerRow.ability || '',
+        baseStats: baseStatsOf(attackerRow),
+        types: [attackerRow.type1, attackerRow.type2].filter(Boolean),
+        side: attackerSide.faintedCount != null ? { faintedCount: attackerSide.faintedCount } : undefined,
+        timesHit: attackerSide.timesHit,
+        hpFraction: attackerSide.hpFraction,
+        status: attackerSide.status || '',
+        consecutiveUses: attackerSide.consecutiveUses,
+      },
+      defender: {
+        name: defenderRow.name,
+        nature: defenderSide.nature || 'Hardy',
+        sp: defenderSide.sp || {},
+        item: defenderSide.item || '',
+        ability: defenderSide.ability || defenderRow.ability || '',
+        baseStats: baseStatsOf(defenderRow),
+        types: [defenderRow.type1, defenderRow.type2].filter(Boolean),
+        hpFraction: defenderSide.hpFraction,
+        status: defenderSide.status || '',
+        isFriendGuard: defenderSide.isFriendGuard === true,
+      },
+      move: moveData,
+      isDouble: true,
+      weather: weather || null,
+      field: field || undefined,
+    });
+    return {
+      min: round(result.minPercent, 1),
+      max: round(result.maxPercent, 1),
+      bp_unresolved: result.bp_unresolved === true,
+      base_power_used: result.base_power_used,
+    };
+  } catch (_err) {
+    return null;
+  }
+}
+
+/**
+ * The same attacker with Intimidate's -1 Attack stage already applied to its
+ * FINAL Attack stat, expressed as a species row the calculator will rebuild that
+ * exact stat from.
+ *
+ * This detour exists because CalcDamage copies `boosts` through but only ever
+ * reads it for Stored Power and Punishment's base power — it is NOT applied to
+ * the attacking stat (nerd_of_now_calc.js:990 reads attacker.stats.atk raw).
+ * Passing boosts:{atk:-1} therefore looks correct and changes nothing, which is
+ * exactly the class of silent no-op that file's own comment warns about.
+ *
+ * -1 is floor(atk * 2/3) on the stat, so the target stat is known exactly; the
+ * search finds a (base Attack, nature) pair that reproduces it and VERIFIES the
+ * result against the calculator's own stat builder — Attack hit exactly, Speed
+ * unchanged, so Gyro Ball and Electro Ball are unaffected — before returning.
+ *
+ * A substitute nature is searched only because an Attack-boosting nature's
+ * floor() genuinely skips some target values (measured: ~1.3% of base-Attack x
+ * SP x nature combinations are unreachable while holding the nature fixed).
+ * Swapping it is safe here and only here: this path runs for PHYSICAL moves
+ * only, and for a physical move the calculator reads exactly two attacker stats
+ * — Attack and Speed — both of which the verification pins. Returns null if
+ * nothing verifies, and the caller then reports Intimidate as unmodelled rather
+ * than printing an approximation.
+ */
+const ALL_NATURES = [
+  'Hardy', 'Lonely', 'Brave', 'Adamant', 'Naughty', 'Bold', 'Docile', 'Relaxed',
+  'Impish', 'Lax', 'Timid', 'Hasty', 'Serious', 'Jolly', 'Naive', 'Modest',
+  'Mild', 'Quiet', 'Bashful', 'Rash', 'Calm', 'Gentle', 'Sassy', 'Careful', 'Quirky',
+];
+
+function intimidatedAttackerRow(attackerRow, attackerSide) {
+  const base = baseStatsOf(attackerRow);
+  if (base.atk == null || base.spe == null) return null;
+  const sp = attackerSide.sp || {};
+  const realNature = attackerSide.nature || 'Hardy';
+  const real = buildStatsFromSP(base, sp, realNature);
+  const target = Math.floor(real.atk * 2 / 3);
+  const spAtk = sp.atk || sp.at || 0;
+  // The nature multiplier is between 0.9x and 1.1x, so the base value that lands
+  // on `target` is inside this window; scanned rather than solved so the search
+  // never has to assume which nature table the calculator is using.
+  const from = Math.floor(target / 1.1) - 20 - spAtk - 2;
+  const to = Math.ceil(target / 0.9) - 20 - spAtk + 2;
+  for (const nature of [realNature, ...ALL_NATURES]) {
+    for (let b = from; b <= to; b++) {
+      const probe = buildStatsFromSP({ ...base, atk: b }, sp, nature);
+      if (probe.atk === target && probe.spe === real.spe) {
+        return {
+          row: { ...attackerRow, atk: b },
+          nature,
+          nature_substituted: nature !== realNature,
+          before_atk: real.atk,
+          after_atk: target,
+        };
+      }
+    }
+  }
+  return null;
+}
+
+// --- DERIVED ROLE VOCABULARY -------------------------------------------------
+//
+// A role is DERIVED, never per-species. The rule this enforces: a high BASE stat
+// must never imply a role. Sinistcha (121 base SpA) and Grimmsnarl (120) were
+// both classed as sweepers on base stats alone while every real set of either is
+// Bold/Impish with zero offensive investment. Only what the observed sets
+// actually invest in, and actually carry, is allowed to decide.
+//
+// The offensive thresholds are archetype_matchups.js's own sweeper test, not new
+// ones, and observedInvestment()'s offensive half is its offensiveInvestment()
+// verbatim. They are re-declared here rather than imported because
+// archetype_matchups.js requires THIS file (importing back is a cycle) and
+// because neither the constants nor the function are exported there.
+const SWEEPER_MIN_OFFENSIVE_SP = 12;   // of 32, usage-weighted across observed sets
+const SWEEPER_MIN_DAMAGING_MOVES = 2;
+const SPEED_CONTROL_MOVES = new Set(['trick room', 'tailwind', 'icy wind', 'electroweb', 'thunder wave', 'string shot']);
+const PIVOT_MOVES = new Set(['u-turn', 'volt switch', 'flip turn', 'parting shot', 'teleport', 'baton pass', 'shed tail', 'chilly reception']);
+const ROLE_VOCABULARY = ['fast sweeper', 'bulky sweeper', 'fast support', 'bulky support', 'speed control', 'pivot', 'wallbreaker'];
+
+/**
+ * Usage-weighted SP investment across every observed spread — offensive
+ * (max of atk/spa) and defensive (hp plus the larger defence) measured the same
+ * way so the two are directly comparable, which is what decides "bulky".
+ */
+async function observedInvestment(nameLower) {
+  if (investmentCache.has(nameLower)) return investmentCache.get(nameLower);
+  const data = await getCommonSpreads(nameLower).catch(() => null);
+  let out = null;
+  if (data && data.spreads && data.spreads.length > 0) {
+    let off = 0;
+    let def = 0;
+    let totalFreq = 0;
+    for (const entry of data.spreads) {
+      const f = entry.frequency || 0;
+      off += Math.max(entry.sp?.atk || 0, entry.sp?.spa || 0) * f;
+      def += ((entry.sp?.hp || 0) + Math.max(entry.sp?.def || 0, entry.sp?.spd || 0)) * f;
+      totalFreq += f;
+    }
+    if (totalFreq > 0) {
+      out = { offensive: off / totalFreq, defensive: def / totalFreq, sets_seen: data.spreads.length };
+    }
+  }
+  investmentCache.set(nameLower, out);
+  return out;
+}
+
+/**
+ * Effective Speed from a REAL final stat.
+ *
+ * archetype_matchups.js's buildKeyThreats calls effectiveSpeed with
+ * `final_stats: null`, so effectiveSpeed falls back to `pokemonRow.spe` and the
+ * `speed` it publishes on every key threat is that threat's BASE Speed, not its
+ * built Speed. Comparing a candidate's real final Speed (which can be 60+ points
+ * higher) against those numbers would make literally everything "fast", so this
+ * file computes both sides itself, from each Pokemon's own spread, and reports
+ * the basis it used.
+ */
+function effectiveSpeedFor(row, sp, nature, item, ability, weather) {
+  if (!row || row.spe == null) return null;
+  const spe = calcStat(row.spe, sp?.spe || 0, natureMultiplierFor(nature || 'Hardy', 'spe'), false);
+  return effectiveSpeed(
+    { pokemonRow: row, final_stats: { spe }, sp: sp || {}, nature: nature || 'Hardy', item: item || '', ability: ability || '' },
+    { by_weather: weather ? { [weather]: [{ weather }] } : {} }
+  );
+}
+
+async function threatEffectiveSpeed(threat, weather) {
+  const key = `${lower(threat.pokemon)}|${weather || 'none'}`;
+  if (threatSpeedCache.has(key)) return threatSpeedCache.get(key);
+  const row = await getSpeciesRow(lower(threat.pokemon)).catch(() => null);
+  const spread = row ? await getMostCommonSpread(lower(threat.pokemon)).catch(() => null) : null;
+  const speed = row
+    ? effectiveSpeedFor(row, spread?.sp || {}, spread?.nature || 'Hardy', threat.item || '', threat.ability || '', weather)
+    : null;
+  threatSpeedCache.set(key, speed);
+  return speed;
+}
+
+/** Median of the meta speeds we actually resolved — null when none resolved. */
+function medianOf(values) {
+  const nums = values.filter((v) => typeof v === 'number' && Number.isFinite(v)).sort((a, b) => a - b);
+  if (nums.length === 0) return null;
+  const mid = Math.floor(nums.length / 2);
+  return nums.length % 2 === 1 ? nums[mid] : (nums[mid - 1] + nums[mid]) / 2;
+}
+
+/**
+ * One role from the fixed vocabulary, plus every signal it was derived from, so
+ * the classification is checkable rather than asserted.
+ *
+ * `moves` is the set this Pokemon actually runs; `sp`/`nature`/`item`/`ability`
+ * are the build being proposed (fresh optimised spread for a candidate, the real
+ * assigned build for a team member) and decide only the Speed comparison. The
+ * offensive/defensive split is always the usage-weighted OBSERVED investment,
+ * because that is the measurement that survives the base-stat trap.
+ */
+async function deriveRole({ name, row, moves, sp, nature, item, ability, metaMedianSpeed, weather }) {
+  const nameLower = lower(name);
+  const investment = await observedInvestment(nameLower);
+
+  let damaging = 0;
+  let status = 0;
+  let speedControlMove = null;
+  let pivotMove = null;
+  for (const mv of moves || []) {
+    if ((mv.power || 0) > 0) damaging += 1; else status += 1;
+    if (!speedControlMove && SPEED_CONTROL_MOVES.has(lower(mv.move))) speedControlMove = mv.move;
+    if (!pivotMove && PIVOT_MOVES.has(lower(mv.move))) pivotMove = mv.move;
+  }
+
+  const effSpeed = effectiveSpeedFor(row, sp, nature, item, ability, weather);
+  const faster = (effSpeed != null && metaMedianSpeed != null) ? effSpeed > metaMedianSpeed : null;
+
+  const signals = {
+    offensive_sp: investment ? round(investment.offensive, 2) : null,
+    defensive_sp: investment ? round(investment.defensive, 2) : null,
+    sets_sampled: investment ? investment.sets_seen : 0,
+    damaging_moves: damaging,
+    status_moves: status,
+    moves_counted: (moves || []).length,
+    speed_control_move: speedControlMove,
+    pivot_move: pivotMove,
+    effective_speed: effSpeed,
+    meta_median_speed: metaMedianSpeed,
+    faster_than_meta_median: faster,
+    thresholds: {
+      min_offensive_sp: SWEEPER_MIN_OFFENSIVE_SP,
+      min_damaging_moves: SWEEPER_MIN_DAMAGING_MOVES,
+      bulky_rule: 'defensive_sp > offensive_sp',
+    },
+    vocabulary: ROLE_VOCABULARY,
+  };
+
+  // Said out loud rather than guessed. "No observed spreads" and "support" are
+  // opposite conclusions and must never render the same way.
+  if (!investment) {
+    return { role: null, unavailable_reason: `no observed SP spreads for ${name} — role is not derivable from usage data`, ...signals };
+  }
+  if (faster === null) {
+    return { role: null, unavailable_reason: `no resolvable meta Speed baseline for ${name} — fast/bulky cannot be decided`, ...signals };
+  }
+
+  const offensive = investment.offensive >= SWEEPER_MIN_OFFENSIVE_SP && damaging >= SWEEPER_MIN_DAMAGING_MOVES;
+  const bulky = investment.defensive > investment.offensive;
+
+  let role;
+  if (offensive) {
+    // A wallbreaker is the residual offensive case: it invests to hit hard but
+    // neither outruns the meta nor puts more into its defences than its offence.
+    role = faster ? 'fast sweeper' : (bulky ? 'bulky sweeper' : 'wallbreaker');
+  } else if (speedControlMove) {
+    role = 'speed control';
+  } else if (pivotMove) {
+    role = 'pivot';
+  } else {
+    role = faster ? 'fast support' : 'bulky support';
+  }
+  return { role, unavailable_reason: null, ...signals };
+}
+
 // --- 3. POKEMON SWAPS --------------------------------------------------------
 
 async function candidateProfile(name) {
@@ -480,6 +900,8 @@ async function candidateProfile(name) {
     types: [row.type1, row.type2].filter(Boolean),
     spread,
     item: items[0]?.item || '',
+    ability: await observedAbilityFor(key, row),
+    moves: await observedMovesFor(key),
   };
   candidateProfileCache.set(key, profile);
   return profile;
@@ -505,6 +927,682 @@ function candidateMatchupScore(profile, threats) {
   return (defensive + offensive) / Math.max(threats.length, 1);
 }
 
+// --- BUILDS UNDER COMPARISON -------------------------------------------------
+
+/**
+ * `status` is threaded for the same reason archetype_matchups.js threads it: a
+ * Guts Flame Orb holder is burned on purpose, so calculating it unburned
+ * describes a set nobody plays — and on the receiving end it is what makes an
+ * incoming Hex or Venoshock 130 BP rather than 65.
+ */
+function sideOfBuild(build) {
+  return {
+    nature: build.nature,
+    item: build.item,
+    ability: build.ability,
+    sp: build.sp || {},
+    ivs: { hp: 31 },
+    status: selfInflictedStatus(build.item, build.ability),
+  };
+}
+
+function formatSpread(sp, nature) {
+  if (!sp) return 'no spread resolved';
+  return `${formatSp(sp)}${nature ? `, ${nature}` : ''}`;
+}
+
+/**
+ * A candidate evaluated on a FRESH optimised spread, not only on its modal
+ * tournament spread — the modal spread was built for somebody else's team, and
+ * judging a swap on it answers a different question than the one being asked.
+ * Falls back to the modal spread when the search cannot run, and says which one
+ * every number came from.
+ */
+async function candidateBuild(profile, fieldOpts) {
+  const key = lower(profile.name);
+  if (candidateBuildCache.has(key)) return candidateBuildCache.get(key);
+
+  let sp = null;
+  let nature = profile.spread?.nature || 'Hardy';
+  let source = 'none';
+  try {
+    const evo = await getOrComputeEvolutionarySpread(profile.name, {
+      item: profile.item || null, teamBuild: true, fieldOpts,
+    });
+    const evoSp = evo?.result?.spreads?.[0]?.sp || null;
+    if (evoSp) { sp = evoSp; nature = evo.nature || nature; source = 'evolutionary'; }
+  } catch (_err) { sp = null; }
+  if (!sp && profile.spread?.sp) { sp = profile.spread.sp; source = 'observed_modal'; }
+
+  // The SET, not the movepool. `profile.moves` is every move ever recorded on
+  // this species, frequency-ordered — counting all of it would make "runs two
+  // damaging moves" true of essentially everything, and would let a move seen
+  // once in two hundred sets stand as a field effect this Pokemon brings. Four
+  // is the same slice archetype_matchups.js takes for a threat's top_moves.
+  const setMoves = (profile.moves || []).slice(0, 4);
+  const used = setMoves.filter((mv) => (mv.power || 0) > 0 && mv.type);
+  const damagingObserved = (profile.moves || []).filter((mv) => (mv.power || 0) > 0 && mv.type);
+  const build = {
+    name: profile.name,
+    row: profile.row,
+    types: profile.types,
+    sp,
+    nature,
+    item: profile.item || '',
+    ability: profile.ability || '',
+    spread_source: source,
+    spread_label: formatSpread(sp, nature),
+    moves: used,
+    set_moves: setMoves,
+    all_moves: profile.moves || [],
+    moves_source: (profile.moves || []).length > 0 ? 'tournament_teams' : 'none',
+    moves_truncated: Math.max(0, setMoves.length - used.length),
+    damaging_moves_outside_set: Math.max(0, damagingObserved.length - used.length),
+    observed_move_count: (profile.moves || []).length,
+  };
+  candidateBuildCache.set(key, build);
+  return build;
+}
+
+/** The same shape for a member of OUR team, from its real assigned build. */
+function memberBuild(member) {
+  const damaging = (member.moves || []).filter((mv) => mv.power && mv.type).slice(0, 4);
+  return {
+    name: member.pokemon,
+    row: member.pokemonRow,
+    types: [member.pokemonRow?.type1, member.pokemonRow?.type2].filter(Boolean),
+    sp: member.sp || {},
+    nature: member.nature,
+    item: member.item || '',
+    ability: member.ability || '',
+    spread_source: 'team_build',
+    spread_label: formatSpread(member.sp, member.nature),
+    moves: damaging,
+    set_moves: member.moves || [],
+    all_moves: member.moves || [],
+    moves_source: 'team_build',
+    moves_truncated: 0,
+    damaging_moves_outside_set: 0,
+    observed_move_count: (member.moves || []).length,
+  };
+}
+
+/** threat name -> the hardest guaranteed hit this build lands on it. */
+function ohkoLedger(build, defenders, weather) {
+  const out = new Map();
+  let failures = 0;
+  for (const d of defenders) {
+    let best = null;
+    for (const mv of build.moves) {
+      const dmg = calcWithField(build.row, sideOfBuild(build), d.row, d.side, mv.move, weather, null);
+      if (!dmg) { failures += 1; continue; }
+      if (!best || dmg.min > best.min) best = { move: mv.move, min: dmg.min, max: dmg.max };
+    }
+    if (best) out.set(d.threat.pokemon, best);
+  }
+  return { ledger: out, failures };
+}
+
+/** "threat|move" -> what that incoming attack does to this build. */
+function incomingLedger(build, defenders, weather) {
+  const out = new Map();
+  let failures = 0;
+  for (const d of defenders) {
+    for (const moveName of d.threat.top_moves || []) {
+      const dmg = calcWithField(d.row, d.side, build.row, sideOfBuild(build), moveName, weather, null);
+      if (!dmg) { failures += 1; continue; }
+      out.set(`${d.threat.pokemon}|${moveName}`, { threat: d.threat.pokemon, usage: d.threat.usage, move: moveName, ...dmg });
+    }
+  }
+  return { ledger: out, failures };
+}
+
+function capList(list, max) {
+  return { list: list.slice(0, max), truncated: Math.max(0, list.length - max) };
+}
+
+/**
+ * What the swap actually trades, both directions, entirely from real calcs:
+ * KOs gained, KOs given up, hits newly survived, hits newly fatal.
+ */
+function comparativeDelta(candidate, dropped, defenders, weather) {
+  const candOff = ohkoLedger(candidate, defenders, weather);
+  const dropOff = ohkoLedger(dropped, defenders, weather);
+  const candIn = incomingLedger(candidate, defenders, weather);
+  const dropIn = incomingLedger(dropped, defenders, weather);
+
+  const gains = [];
+  const losses = [];
+  const shared = [];
+  for (const d of defenders) {
+    const name = d.threat.pokemon;
+    const c = candOff.ledger.get(name);
+    const o = dropOff.ledger.get(name);
+    const cKo = !!c && c.min >= 100;
+    const oKo = !!o && o.min >= 100;
+    if (cKo && !oKo) {
+      gains.push({
+        threat: name, usage: d.threat.usage, move: c.move,
+        damage_range: `${c.min}-${c.max}%`, damage_min: c.min, damage_max: c.max,
+        dropped_best_move: o?.move || null, dropped_best_min: o?.min ?? null,
+      });
+    } else if (oKo && !cKo) {
+      losses.push({
+        threat: name, usage: d.threat.usage, move: o.move,
+        damage_range: `${o.min}-${o.max}%`, damage_min: o.min, damage_max: o.max,
+        candidate_best_move: c?.move || null, candidate_best_min: c?.min ?? null,
+      });
+    } else if (cKo && oKo) {
+      shared.push(name);
+    }
+  }
+
+  const survives = [];
+  const vulnerable = [];
+  for (const [key, cand] of candIn.ledger.entries()) {
+    const drop = dropIn.ledger.get(key);
+    if (!drop) continue;
+    const candSurvives = cand.min < 100;
+    const dropSurvives = drop.min < 100;
+    const row = {
+      threat: cand.threat, usage: cand.usage, move: cand.move,
+      candidate_range: `${cand.min}-${cand.max}%`, candidate_min: cand.min, candidate_max: cand.max,
+      dropped_range: `${drop.min}-${drop.max}%`, dropped_min: drop.min, dropped_max: drop.max,
+    };
+    if (candSurvives && !dropSurvives) survives.push(row);
+    else if (!candSurvives && dropSurvives) vulnerable.push(row);
+  }
+
+  gains.sort((a, b) => b.usage - a.usage);
+  losses.sort((a, b) => b.usage - a.usage);
+  survives.sort((a, b) => b.dropped_min - a.dropped_min);
+  vulnerable.sort((a, b) => b.candidate_min - a.candidate_min);
+
+  const g = capList(gains, MAX_DELTA_LINES);
+  const l = capList(losses, MAX_DELTA_LINES);
+  const s = capList(survives, MAX_DELTA_LINES);
+  const v = capList(vulnerable, MAX_DELTA_LINES);
+
+  return {
+    weather: weather || null,
+    threats_evaluated: defenders.length,
+    incoming_attacks_evaluated: candIn.ledger.size,
+    gains_ohko_on: g.list,
+    loses_ohko_on: l.list,
+    shared_ohko_on: shared,
+    newly_survives: s.list,
+    newly_vulnerable: v.list,
+    truncated: {
+      gains_ohko_on: g.truncated,
+      loses_ohko_on: l.truncated,
+      newly_survives: s.truncated,
+      newly_vulnerable: v.truncated,
+    },
+    calc_failures: candOff.failures + dropOff.failures + candIn.failures + dropIn.failures,
+    net_score: gains.length * 2 - losses.length * 2 + survives.length - vulnerable.length,
+    // Kept whole so a caller can reconcile the capped lists against the totals.
+    totals: {
+      gains_ohko_on: gains.length,
+      loses_ohko_on: losses.length,
+      newly_survives: survives.length,
+      newly_vulnerable: vulnerable.length,
+    },
+  };
+}
+
+// --- FIELD EFFECTS, RECOMPUTED ------------------------------------------------
+
+const SCREEN_MOVES = { reflect: 'Reflect', 'light screen': 'Light Screen', 'aurora veil': 'Aurora Veil' };
+const SCREEN_FIELD_KEY = { Reflect: 'isReflect', 'Light Screen': 'isLightScreen', 'Aurora Veil': 'isAuroraVeil' };
+// Which incoming category each screen actually touches. Aurora Veil is null =
+// both, which is the whole reason it is worth more than either screen alone.
+const SCREEN_CATEGORY = { Reflect: 'Physical', 'Light Screen': 'Special', 'Aurora Veil': null };
+const FIELD_ABILITIES = { intimidate: 'Intimidate', 'friend guard': 'Friend Guard' };
+
+function memberRunsMove(member, moveName) {
+  return (member.moves || []).some((mv) => lower(mv.move) === lower(moveName));
+}
+
+// Aurora Veil does nothing without Snow on the field. Reporting its arithmetic
+// for a team that has no way to make it Snow is a number that can never happen,
+// which is worse than saying nothing — so it is gated on a real Snow source.
+const SNOW_MOVES = new Set(['snowscape', 'hail', 'chilly reception']);
+
+function snowSources(builds, weather) {
+  const sources = [];
+  if (weather === 'Snow') sources.push('the archetype\'s own Snow');
+  for (const b of builds) {
+    if (WEATHER_ABILITIES[lower(b.ability)] === 'Snow') sources.push(`${b.name} (${b.ability})`);
+    for (const mv of b.set_moves || []) {
+      if (SNOW_MOVES.has(lower(mv.move))) sources.push(`${b.name}'s ${mv.move}`);
+    }
+  }
+  return sources;
+}
+
+/**
+ * The field effects a candidate brings that the team does not already have, each
+ * one recomputed against the calcs it actually changes.
+ *
+ * Screens are gated hard: nothing about a screen is emitted unless a Pokemon on
+ * one of the two teams can genuinely set it — confirmed against the candidate's
+ * observed tournament sets AND its learnset. A screen nobody can put up is not a
+ * reason to make a swap, and printing the arithmetic for one is worse than
+ * printing nothing.
+ */
+async function fieldEffectAnalysis(candidate, droppedName, team, defenders, threats, weather) {
+  const remaining = team.filter((m) => m.pokemon !== droppedName);
+  const remainingBuilds = remaining.map(memberBuild);
+  const snow = snowSources([...remainingBuilds, candidate], weather);
+  const brought = [];
+  const skipped = [];
+
+  for (const mv of candidate.set_moves) {
+    const effect = SCREEN_MOVES[lower(mv.move)];
+    if (!effect) continue;
+    const learnsIt = await knowsMove(candidate.name, effect);
+    const oursSetting = remaining.filter((m) => memberRunsMove(m, effect)).map((m) => `${m.pokemon} (our side)`);
+    const theirsSetting = threats
+      .filter((t) => (t.top_moves || []).some((x) => lower(x) === lower(effect)))
+      .map((t) => `${t.pokemon} (their side)`);
+    const setters = [...(learnsIt ? [`${candidate.name} (incoming)`] : []), ...oursSetting, ...theirsSetting];
+    if (setters.length === 0) {
+      skipped.push(`${effect} — observed on ${candidate.name} in tournament data but absent from its learnset, and no Pokemon on either team can set it; not reported`);
+      continue;
+    }
+    if (effect === 'Aurora Veil' && snow.length === 0) {
+      skipped.push(`Aurora Veil — ${candidate.name} runs it, but neither this team nor ${weather ? `their ${weather}` : 'this matchup'} can put Snow on the field, so it can never go up; not reported`);
+      continue;
+    }
+    brought.push({
+      effect,
+      source: mv.move,
+      source_kind: 'move',
+      observed_frequency: round(mv.frequency || 0, 4),
+      learnset_confirmed: learnsIt,
+      setters,
+      already_on_team: remaining.some((m) => memberRunsMove(m, effect)),
+    });
+  }
+
+  const abilityEffect = FIELD_ABILITIES[lower(candidate.ability)];
+  if (abilityEffect) {
+    brought.push({
+      effect: abilityEffect,
+      source: candidate.ability,
+      source_kind: 'ability',
+      observed_frequency: null,
+      learnset_confirmed: null,
+      setters: [`${candidate.name} (incoming)`],
+      already_on_team: remaining.some((m) => lower(m.ability) === lower(candidate.ability)),
+    });
+  }
+
+  const recomputes = [];
+  let calcFailures = 0;
+  let unmodelled = 0;
+  const newEffects = brought.filter((b) => !b.already_on_team);
+
+  for (const b of newEffects) {
+    // Everyone the effect protects. Friend Guard is an ALLY-only aura — it never
+    // reduces damage taken by its own holder — so the candidate is excluded from
+    // its defender list and included in every other effect's.
+    const defendersOnOurSide = b.effect === 'Friend Guard'
+      ? remainingBuilds
+      : [...remainingBuilds, candidate];
+
+    for (const ourMon of defendersOnOurSide) {
+      if (!ourMon.row) continue;
+      for (const d of defenders) {
+        for (const moveName of d.threat.top_moves || []) {
+          const moveRow = await getMoveRow(moveName);
+          if (!moveRow || !moveRow.power) continue;
+          if (b.effect === 'Intimidate' && moveRow.category !== 'Physical') continue;
+          const screenCat = SCREEN_CATEGORY[b.effect];
+          if (screenCat !== undefined && screenCat !== null && moveRow.category !== screenCat) continue;
+
+          const before = calcWithField(d.row, d.side, ourMon.row, sideOfBuild(ourMon), moveName, weather, null);
+          if (!before) { calcFailures += 1; continue; }
+          // Only hits that matter. A field effect shaving 3% off a 12% hit is
+          // not an argument for a swap and would bury the ones that are.
+          if (before.min < 100 && before.max < HEAVY_DAMAGE_PCT) continue;
+
+          let after = null;
+          let note = null;
+          if (SCREEN_FIELD_KEY[b.effect]) {
+            after = calcWithField(d.row, d.side, ourMon.row, sideOfBuild(ourMon), moveName, weather,
+              { [SCREEN_FIELD_KEY[b.effect]]: true });
+            if (b.effect === 'Aurora Veil') note = `holds only while Snow is up — Snow from: ${snow.join(', ')}`;
+          } else if (b.effect === 'Friend Guard') {
+            after = calcWithField(d.row, d.side, ourMon.row, { ...sideOfBuild(ourMon), isFriendGuard: true }, moveName, weather, null);
+            note = `requires ${candidate.name} on the field alongside ${ourMon.name}`;
+          } else if (b.effect === 'Intimidate') {
+            const intimidated = intimidatedAttackerRow(d.row, d.side);
+            if (!intimidated) {
+              // Reported, never approximated. See intimidatedAttackerRow.
+              unmodelled += 1;
+              continue;
+            }
+            after = calcWithField(intimidated.row, { ...d.side, nature: intimidated.nature },
+              ourMon.row, sideOfBuild(ourMon), moveName, weather, null);
+            note = `${d.threat.pokemon} Attack ${intimidated.before_atk} -> ${intimidated.after_atk}`;
+          }
+          if (!after) { calcFailures += 1; continue; }
+
+          recomputes.push({
+            effect: b.effect,
+            defender: ourMon.name,
+            attacker: d.threat.pokemon,
+            attacker_usage: d.threat.usage,
+            move: moveName,
+            move_category: moveRow.category,
+            before_range: `${before.min}-${before.max}%`,
+            before_min: before.min,
+            before_max: before.max,
+            before_ohko: before.min >= 100,
+            after_range: `${after.min}-${after.max}%`,
+            after_min: after.min,
+            after_max: after.max,
+            after_ohko: after.min >= 100,
+            change_max: round(before.max - after.max, 1),
+            prevents_ohko: before.min >= 100 && after.min < 100,
+            exact: true,
+            note,
+          });
+        }
+      }
+    }
+  }
+
+  recomputes.sort((a, b) => (b.prevents_ohko === a.prevents_ohko ? 0 : b.prevents_ohko ? 1 : -1)
+    || b.change_max - a.change_max
+    || b.attacker_usage - a.attacker_usage);
+  const capped = capList(recomputes, MAX_FIELD_RECOMPUTES);
+
+  // What the numbers assume. Stated because each of these is a condition the
+  // calculation cannot itself enforce, and a before/after pair with the
+  // condition left unsaid reads as unconditional.
+  const caveats = [];
+  for (const b of newEffects) {
+    if (SCREEN_FIELD_KEY[b.effect]) {
+      caveats.push(`${b.effect} figures assume it is already up — ${candidate.name} spends a turn setting it, and it lasts five (eight with Light Clay)`);
+    }
+    if (b.effect === 'Intimidate') {
+      caveats.push(`Intimidate figures assume the drop landed — it triggers once per switch-in and is blocked by Clear Body, Inner Focus, Own Tempo, Oblivious, Scrappy, Guard Dog, a Clear Amulet or an existing -6`);
+    }
+    if (b.effect === 'Friend Guard') {
+      caveats.push(`Friend Guard figures assume ${candidate.name} is on the field alongside the teammate being hit — it never reduces damage to itself`);
+    }
+  }
+
+  return {
+    brought,
+    new_effects: newEffects.map((b) => b.effect),
+    skipped,
+    snow_sources: snow,
+    caveats,
+    recomputes: capped.list,
+    recomputes_truncated: capped.truncated,
+    recomputes_total: recomputes.length,
+    calc_failures: calcFailures,
+    intimidate_unmodelled: unmodelled,
+  };
+}
+
+// --- BACKFILL SEARCH ----------------------------------------------------------
+
+/**
+ * What this drop costs that nothing left on the team replaces, and whether
+ * ANYTHING in the whole legal pool covers it.
+ *
+ * Entirely generic: a loss is discovered by comparing ledgers, never by naming a
+ * species or a threat. The two kinds of loss are the only two the team-value
+ * model already recognises as irreplaceable — the last OHKO on a threat, and the
+ * last source of an attacking type.
+ */
+function irreplaceableLosses(candidate, dropped, remainingBuilds, defenders, weather) {
+  const losses = [];
+
+  const dropOff = ohkoLedger(dropped, defenders, weather).ledger;
+  const candOff = ohkoLedger(candidate, defenders, weather).ledger;
+  const remainingOff = remainingBuilds.map((b) => ohkoLedger(b, defenders, weather).ledger);
+
+  for (const d of defenders) {
+    const name = d.threat.pokemon;
+    const o = dropOff.get(name);
+    if (!o || o.min < 100) continue;
+    const c = candOff.get(name);
+    if (c && c.min >= 100) continue;
+    const someoneElse = remainingOff.some((led) => { const e = led.get(name); return e && e.min >= 100; });
+    if (someoneElse) continue;
+    losses.push({
+      kind: 'ohko',
+      what: name,
+      usage: d.threat.usage,
+      detail: `${dropped.name}'s ${o.move} is the team's only guaranteed KO on ${name} (${o.min}-${o.max}%), and ${candidate.name} does not replace it`,
+      threat: d.threat,
+      defender: d,
+    });
+  }
+
+  const typesOfBuild = (b) => new Set(b.moves.filter((mv) => (mv.power || 0) > 0 && mv.type).map((mv) => mv.type));
+  const droppedTypes = typesOfBuild(dropped);
+  const kept = new Set();
+  for (const b of [...remainingBuilds, candidate]) for (const t of typesOfBuild(b)) kept.add(t);
+  for (const t of droppedTypes) {
+    if (kept.has(t)) continue;
+    losses.push({
+      kind: 'coverage_type',
+      what: t,
+      usage: null,
+      detail: `${dropped.name} is the team's only source of ${t} coverage and ${candidate.name} brings none`,
+      threat: null,
+      defender: null,
+    });
+  }
+
+  losses.sort((a, b) => (b.usage ?? 0) - (a.usage ?? 0));
+  return losses;
+}
+
+async function searchPoolForOhko(loss, poolNames, weather, exclude) {
+  const found = [];
+  let profileMisses = 0;
+  let searched = 0;
+  const targetSpeed = await threatEffectiveSpeed(loss.threat, weather);
+
+  for (const entry of poolNames) {
+    if (exclude.has(lower(entry.name))) continue;
+    searched += 1;
+    const profile = await candidateProfile(entry.name);
+    if (!profile) { profileMisses += 1; continue; }
+    const sp = profile.spread?.sp || null;
+    if (!sp) continue;
+    const side = {
+      nature: profile.spread?.nature || 'Hardy', item: profile.item || '', ability: profile.ability || '',
+      sp, ivs: { hp: 31 }, status: selfInflictedStatus(profile.item || '', profile.ability || ''),
+    };
+
+    let best = null;
+    // Slice first, filter second: the top six OBSERVED moves, then whichever of
+    // those do damage. Filtering first reaches down the frequency list into
+    // moves nobody actually runs, and manufactures a KO out of one of them.
+    for (const mv of (profile.moves || []).slice(0, 6).filter((m) => (m.power || 0) > 0 && m.type)) {
+      const dmg = calcWithField(profile.row, side, loss.defender.row, loss.defender.side, mv.move, weather, null);
+      if (!dmg || dmg.min < 100) continue;
+      if (!best || dmg.min > best.min) best = { move: mv.move, type: mv.type, frequency: round(mv.frequency || 0, 4), ...dmg };
+    }
+    if (!best) continue;
+
+    // A Focus Sash on the target denies any single-hit KO from full HP, so
+    // "can anything outspeed and OHKO this" has to be asked against the Sash
+    // too — otherwise the answer is only true against the items it happens to
+    // be observed holding. The Sash SUBSTITUTES for the target's observed item
+    // rather than stacking with it, because a Sash set is not also an Assault
+    // Vest set; `sash_replaces_item` names what was displaced so the comparison
+    // is not mistaken for "same set, plus a Sash".
+    // status is recomputed, not inherited: the displaced item may have been the
+    // Orb that was self-inflicting it.
+    const sashSide = { ...loss.defender.side, item: 'Focus Sash', status: selfInflictedStatus('Focus Sash', loss.defender.side.ability) };
+    const sashed = calcWithField(profile.row, side, loss.defender.row, sashSide, best.move, weather, null);
+    const speed = effectiveSpeedFor(profile.row, sp, side.nature, side.item, side.ability, weather);
+
+    found.push({
+      pokemon: profile.name,
+      usage: entry.usage,
+      types: profile.types,
+      move: best.move,
+      move_type: best.type,
+      move_observed_frequency: best.frequency,
+      damage_range: `${best.min}-${best.max}%`,
+      damage_min: best.min,
+      damage_max: best.max,
+      ohko: true,
+      spread_source: 'observed_modal',
+      spread_label: formatSpread(sp, side.nature),
+      nature: side.nature,
+      item: side.item,
+      ability: side.ability,
+      effective_speed: speed,
+      target_speed: targetSpeed,
+      outspeeds: (speed != null && targetSpeed != null) ? speed > targetSpeed : null,
+      ohko_through_focus_sash: sashed ? sashed.min >= 100 : null,
+      sash_denies_ohko: sashed ? sashed.min < 100 : null,
+      sash_replaces_item: loss.defender.side.item || null,
+      verified_on_optimised_spread: false,
+    });
+  }
+
+  found.sort((a, b) => (b.outspeeds === a.outspeeds ? 0 : b.outspeeds ? 1 : -1)
+    || b.damage_min - a.damage_min
+    || b.usage - a.usage);
+  return { found, searched, profileMisses };
+}
+
+async function searchPoolForCoverage(loss, poolNames, defenders, weather, exclude) {
+  const found = [];
+  let profileMisses = 0;
+  let searched = 0;
+  const reference = defenders[0] || null;
+
+  for (const entry of poolNames) {
+    if (exclude.has(lower(entry.name))) continue;
+    searched += 1;
+    const profile = await candidateProfile(entry.name);
+    if (!profile) { profileMisses += 1; continue; }
+    const mv = (profile.moves || []).find((m) => (m.power || 0) > 0 && m.type === loss.what);
+    if (!mv) continue;
+    // Learnset-confirmed as well as observed, so a scrape artefact cannot invent
+    // a coverage source that does not exist.
+    if (!(await knowsMove(profile.name, mv.move))) continue;
+    const sp = profile.spread?.sp || null;
+    const side = {
+      nature: profile.spread?.nature || 'Hardy', item: profile.item || '', ability: profile.ability || '',
+      sp: sp || {}, ivs: { hp: 31 }, status: selfInflictedStatus(profile.item || '', profile.ability || ''),
+    };
+    const dmg = reference
+      ? calcWithField(profile.row, side, reference.row, reference.side, mv.move, weather, null)
+      : null;
+    found.push({
+      pokemon: profile.name,
+      usage: entry.usage,
+      types: profile.types,
+      move: mv.move,
+      move_type: mv.type,
+      move_observed_frequency: round(mv.frequency || 0, 4),
+      damage_range: dmg ? `${dmg.min}-${dmg.max}%` : null,
+      damage_min: dmg ? dmg.min : null,
+      damage_max: dmg ? dmg.max : null,
+      damage_target: reference ? reference.threat.pokemon : null,
+      ohko: dmg ? dmg.min >= 100 : null,
+      spread_source: sp ? 'observed_modal' : 'none',
+      spread_label: formatSpread(sp, side.nature),
+      nature: side.nature,
+      item: side.item,
+      ability: side.ability,
+      effective_speed: effectiveSpeedFor(profile.row, sp || {}, side.nature, side.item, side.ability, weather),
+      target_speed: null,
+      outspeeds: null,
+      ohko_through_focus_sash: null,
+      sash_denies_ohko: null,
+      sash_replaces_item: null,
+      verified_on_optimised_spread: false,
+    });
+  }
+
+  found.sort((a, b) => (b.damage_min ?? -1) - (a.damage_min ?? -1) || b.usage - a.usage);
+  return { found, searched, profileMisses };
+}
+
+/**
+ * Re-run the top few finds on a fresh optimised spread. The pool scan uses each
+ * species' modal tournament spread because 250-odd evolutionary searches per
+ * loss is the one thing that genuinely will not finish; the shortlist that
+ * actually gets reported is then re-checked on the spread we would really build.
+ */
+async function verifyBackfill(entries, loss, weather, fieldOpts) {
+  for (const e of entries.slice(0, BACKFILL_VERIFY_LIMIT)) {
+    const profile = await candidateProfile(e.pokemon);
+    if (!profile) continue;
+    const build = await candidateBuild(profile, fieldOpts);
+    if (!build || !build.sp || build.spread_source !== 'evolutionary') continue;
+    const target = loss.kind === 'ohko' ? loss.defender : null;
+    if (!target) continue;
+    const dmg = calcWithField(build.row, sideOfBuild(build), target.row, target.side, e.move, weather, null);
+    if (!dmg) continue;
+    e.verified_on_optimised_spread = true;
+    e.optimised_spread_label = build.spread_label;
+    e.optimised_damage_range = `${dmg.min}-${dmg.max}%`;
+    e.optimised_damage_min = dmg.min;
+    e.optimised_ohko = dmg.min >= 100;
+    e.effective_speed = effectiveSpeedFor(build.row, build.sp, build.nature, build.item, build.ability, weather);
+    e.outspeeds = (e.effective_speed != null && e.target_speed != null) ? e.effective_speed > e.target_speed : null;
+  }
+  return entries;
+}
+
+async function backfillAnalysis(candidate, dropped, team, defenders, weather, poolNames, fieldOpts) {
+  const remainingBuilds = team.filter((m) => m.pokemon !== dropped.name).map(memberBuild);
+  const all = irreplaceableLosses(candidate, dropped, remainingBuilds, defenders, weather);
+  const capped = capList(all, MAX_BACKFILL_LOSSES);
+  const exclude = new Set([...team.map((m) => lower(m.pokemon)), lower(candidate.name)]);
+
+  const out = [];
+  for (const loss of capped.list) {
+    const scan = loss.kind === 'ohko'
+      ? await searchPoolForOhko(loss, poolNames, weather, exclude)
+      : await searchPoolForCoverage(loss, poolNames, defenders, weather, exclude);
+    const top = capList(scan.found, MAX_BACKFILL_RESULTS);
+    await verifyBackfill(top.list, loss, weather, fieldOpts);
+
+    out.push({
+      kind: loss.kind,
+      what: loss.what,
+      usage: loss.usage,
+      detail: loss.detail,
+      pool_searched: scan.searched,
+      pool_profile_misses: scan.profileMisses,
+      replacements: top.list,
+      replacements_total: scan.found.length,
+      replacements_truncated: top.truncated,
+      nothing_found: scan.found.length === 0,
+      statement: scan.found.length === 0
+        ? (loss.kind === 'ohko'
+          ? `Nothing in the ${scan.searched} legal Pokemon searched guarantees a KO on ${loss.what} from its observed spread — this loss is not backfillable from the pool`
+          : `Nothing in the ${scan.searched} legal Pokemon searched is observed running a damaging ${loss.what} move — this coverage is not backfillable from the pool`)
+        : `${scan.found.length} of the ${scan.searched} legal Pokemon searched cover this; the top ${top.list.length} are listed`,
+    });
+  }
+
+  return {
+    losses: out,
+    losses_total: all.length,
+    losses_truncated: capped.truncated,
+    pool_size: poolNames.length,
+    nothing_lost: all.length === 0,
+  };
+}
+
 /**
  * Drop candidates are ranked by (matchup contribution) MINUS (what the team
  * loses). A member can be useless against rain and still be undroppable because
@@ -514,18 +1612,35 @@ function candidateMatchupScore(profile, threats) {
  */
 const TEAM_VALUE_FLOOR = 40;
 
-async function buildPokemonSwaps(team, threats, weakestMembers, teamValues, archetype) {
-  const { rows: usageRows } = await pool.query(
-    'SELECT pokemon_name, usage_percent FROM usage_stats ORDER BY usage_percent DESC LIMIT $1',
-    [POKEMON_CANDIDATE_POOL]
+async function buildPokemonSwaps(team, threats, weakestMembers, teamValues, archetype, legalPokemonSet, weather, fieldOpts) {
+  // Every legal Pokemon, not the top 40 by usage. A swap whose whole job is to
+  // answer a specific threat is very often NOT a high-usage Pokemon — that is
+  // most of the point of looking for one.
+  const { rows: allRows } = await pool.query(
+    POKEMON_CANDIDATE_POOL
+      ? 'SELECT pokemon_name, usage_percent FROM usage_stats ORDER BY usage_percent DESC LIMIT $1'
+      : 'SELECT pokemon_name, usage_percent FROM usage_stats ORDER BY usage_percent DESC',
+    POKEMON_CANDIDATE_POOL ? [POKEMON_CANDIDATE_POOL] : []
   ).catch(() => ({ rows: [] }));
+
+  // Intersect with the legal set when we have one. usage_stats IS the legal set
+  // today, so this is belt-and-braces rather than a filter that currently bites —
+  // but it means a future usage table carrying illegal entries cannot leak them
+  // into a recommendation.
+  const usageRows = (legalPokemonSet && legalPokemonSet.size > 0)
+    ? allRows.filter((r) => legalPokemonSet.has(r.pokemon_name))
+    : allRows;
 
   const onTeam = new Set(team.map((m) => lower(m.pokemon)));
   const scored = [];
+  let profileMisses = 0;
   for (const r of usageRows) {
     if (onTeam.has(lower(r.pokemon_name))) continue;
     const profile = await candidateProfile(r.pokemon_name);
-    if (!profile) continue;
+    // Counted, not swallowed. A Pokemon with no `pokemon` table row is silently
+    // unswappable, and that is exactly the documented Mega-form data gap — worth
+    // seeing in the output rather than inferring from an absence.
+    if (!profile) { profileMisses += 1; continue; }
     const score = candidateMatchupScore(profile, threats);
     if (score <= 0) continue;
     scored.push({ name: profile.name, types: profile.types, usage: parseFloat(r.usage_percent) / 100, score, item: profile.item });
@@ -546,26 +1661,142 @@ async function buildPokemonSwaps(team, threats, weakestMembers, teamValues, arch
     .filter((w) => w.score >= TEAM_VALUE_FLOOR)
     .map((w) => `${w.pokemon} (${w.contributions.join('; ')})`);
 
+  // Everything below this line is real calculation, so it is resolved once and
+  // shared: the threats as defenders, the meta Speed baseline, and the pool the
+  // backfill search walks.
+  const defenders = [];
+  for (const t of threats) {
+    const d = await threatDefenderSide(t);
+    // Status applied once, here, so every downstream consumer of `defenders`
+    // (delta, field effects, backfill) uses the same threat build. See
+    // sideOfBuild for why it matters.
+    if (d) defenders.push({ threat: t, row: d.row, side: { ...d.side, status: selfInflictedStatus(d.side.item, d.side.ability) } });
+  }
+  const metaSpeeds = [];
+  for (const t of threats) metaSpeeds.push(await threatEffectiveSpeed(t, weather));
+  const metaMedianSpeed = medianOf(metaSpeeds);
+  // The WHOLE legal pool, not `scored`. `scored` drops everything the type chart
+  // rates at zero or worse, and a backfill's entire job is to find the one
+  // Pokemon that answers a specific problem — which is very often exactly the
+  // Pokemon a general type-chart score has no reason to like.
+  const poolNames = usageRows
+    .filter((r) => !onTeam.has(lower(r.pokemon_name)))
+    .map((r) => ({ name: r.pokemon_name, usage: parseFloat(r.usage_percent) / 100 }));
+
   const suggestions = [];
-  for (let i = 0; i < Math.min(MAX_POKEMON_SWAPS, scored.length, droppable.length); i++) {
-    const incoming = scored[i];
+  const takenCandidates = new Set();
+  let realEvaluated = 0;
+
+  for (let i = 0; i < Math.min(MAX_POKEMON_SWAPS, droppable.length); i++) {
     const outgoing = droppable[i];
+    const outgoingMember = team.find((m) => m.pokemon === outgoing.pokemon);
+    if (!outgoingMember) continue;
+    const dropped = memberBuild(outgoingMember);
+
+    // The shortlist is type-chart-scored, but the CHOICE inside it is made on
+    // real damage. Ranking swaps on the type chart alone is how a candidate that
+    // resists everything and KOs nothing reached the top of this list.
+    const shortlist = scored.filter((s) => !takenCandidates.has(lower(s.name))).slice(0, POKEMON_REALCALC_SHORTLIST);
+    if (shortlist.length === 0) break;
+
+    let best = null;
+    for (const cand of shortlist) {
+      const profile = await candidateProfile(cand.name);
+      if (!profile) continue;
+      const build = await candidateBuild(profile, fieldOpts);
+      if (!build) continue;
+      realEvaluated += 1;
+      const delta = comparativeDelta(build, dropped, defenders, weather);
+      if (!best || delta.net_score > best.delta.net_score
+        || (delta.net_score === best.delta.net_score && cand.score > best.cand.score)) {
+        best = { cand, build, delta };
+      }
+    }
+    if (!best) continue;
+    takenCandidates.add(lower(best.cand.name));
+
+    const addRole = await deriveRole({
+      name: best.build.name, row: best.build.row, moves: best.build.set_moves,
+      sp: best.build.sp, nature: best.build.nature, item: best.build.item, ability: best.build.ability,
+      metaMedianSpeed, weather,
+    });
+    const dropRole = await deriveRole({
+      name: dropped.name, row: dropped.row, moves: dropped.set_moves,
+      sp: dropped.sp, nature: dropped.nature, item: dropped.item, ability: dropped.ability,
+      metaMedianSpeed, weather,
+    });
+    const fieldEffects = await fieldEffectAnalysis(best.build, outgoing.pokemon, team, defenders, threats, weather);
+    const backfill = await backfillAnalysis(best.build, dropped, team, defenders, weather, poolNames, fieldOpts);
+
     suggestions.push({
       drop: outgoing.pokemon,
-      add: incoming.name,
-      add_types: incoming.types,
-      add_usage: incoming.usage,
-      add_item: incoming.item,
+      add: best.build.name,
+      add_types: best.build.types,
+      add_usage: best.cand.usage,
+      add_item: best.build.item,
+      add_ability: best.build.ability,
       loses: outgoing.contributions,
-      reason: `${outgoing.pokemon} contributes least against ${archetype} (${outgoing.why}) and holds no irreplaceable team role; ${incoming.name} (${incoming.types.join('/')}) matches up better against ${threats.slice(0, 3).map((t) => t.pokemon).join(', ')}`,
+      // Every clause is a counted result of a real calc. The previous version
+      // ended on "matches up better", which was a type-chart opinion presented
+      // in the same voice as the damage numbers around it.
+      reason: `${outgoing.pokemon} contributes least against ${archetype} (${outgoing.why}) and holds no irreplaceable team role. `
+        + `${best.build.name} (${best.build.types.join('/')}, ${addRole.role || 'role underivable'}) was picked from ${shortlist.length} real-calced candidates: `
+        + `it guarantees a KO on ${best.delta.totals.gains_ohko_on} threat${best.delta.totals.gains_ohko_on === 1 ? '' : 's'} ${outgoing.pokemon} does not, `
+        + `gives up ${best.delta.totals.loses_ohko_on}, `
+        + `survives ${best.delta.totals.newly_survives} incoming attack${best.delta.totals.newly_survives === 1 ? '' : 's'} that KO ${outgoing.pokemon}, `
+        + `and is newly KO'd by ${best.delta.totals.newly_vulnerable}`,
+      add_role: addRole,
+      drop_role: dropRole,
+      add_build: {
+        spread_source: best.build.spread_source,
+        spread_label: best.build.spread_label,
+        sp: best.build.sp,
+        nature: best.build.nature,
+        item: best.build.item,
+        ability: best.build.ability,
+        moves: best.build.moves.map((mv) => ({ move: mv.move, type: mv.type, category: mv.category, power: mv.power })),
+        moves_source: best.build.moves_source,
+        moves_truncated: best.build.moves_truncated,
+      },
+      drop_build: {
+        spread_source: dropped.spread_source,
+        spread_label: dropped.spread_label,
+        sp: dropped.sp,
+        nature: dropped.nature,
+        item: dropped.item,
+        ability: dropped.ability,
+        moves: dropped.moves.map((mv) => ({ move: mv.move, type: mv.type, category: mv.category, power: mv.power })),
+        moves_source: dropped.moves_source,
+        moves_truncated: dropped.moves_truncated,
+      },
+      delta: best.delta,
+      field_effects: fieldEffects,
+      backfill,
+      candidates_real_evaluated: shortlist.length,
     });
   }
-  return { suggestions, pool_considered: usageRows.length, protected: protectedMembers };
+
+  return {
+    suggestions,
+    pool_considered: usageRows.length,
+    pool_scored: scored.length,
+    pool_profile_misses: profileMisses,
+    protected: protectedMembers,
+    meta_median_speed: metaMedianSpeed,
+    meta_speed_basis: 'effective Speed from each key threat\'s own modal observed spread, recomputed here — key_threats[].speed is that threat\'s BASE Speed and is not comparable',
+    candidates_real_evaluated: realEvaluated,
+    realcalc_shortlist_size: POKEMON_REALCALC_SHORTLIST,
+  };
 }
 
 // --- ENTRY POINT -------------------------------------------------------------
 
-async function buildSwaps({ team, threats, archetype, weather, fieldOpts, weakestMembers, synergies }) {
+// `legalPokemonSet` was in the object archetype_matchups.js passes here and was
+// simply absent from this destructure, so it arrived and vanished. Adding the
+// name is the entire fix — which is worth remembering as a class of bug: an
+// unused property in a destructured argument is invisible to `node --check` and
+// to the undefined-call checker alike.
+async function buildSwaps({ team, threats, archetype, weather, fieldOpts, weakestMembers, synergies, legalPokemonSet }) {
   const enrichedThreats = [];
   for (const t of threats) {
     const moveTypes = [];
@@ -582,7 +1813,7 @@ async function buildSwaps({ team, threats, archetype, weather, fieldOpts, weakes
 
   const moves = await buildMoveSwaps(team, enrichedThreats, weather, teamValues);
   const items = await buildItemSwaps(team, enrichedThreats, weather, fieldOpts);
-  const pokemon = await buildPokemonSwaps(team, enrichedThreats, weakestMembers || [], teamValues, archetype);
+  const pokemon = await buildPokemonSwaps(team, enrichedThreats, weakestMembers || [], teamValues, archetype, legalPokemonSet, weather, fieldOpts);
 
   return {
     archetype,
@@ -600,6 +1831,20 @@ async function buildSwaps({ team, threats, archetype, weather, fieldOpts, weakes
       learnset_shortlist: LEARNSET_SHORTLIST,
       min_damage_gain: MIN_DAMAGE_GAIN,
       pokemon_pool_considered: pokemon.pool_considered,
+      pokemon_pool_scored: pokemon.pool_scored,
+      pokemon_pool_profile_misses: pokemon.pool_profile_misses,
+      pokemon_realcalc_shortlist: pokemon.realcalc_shortlist_size,
+      pokemon_candidates_real_evaluated: pokemon.candidates_real_evaluated,
+      max_delta_lines: MAX_DELTA_LINES,
+      max_field_recomputes: MAX_FIELD_RECOMPUTES,
+      max_backfill_losses: MAX_BACKFILL_LOSSES,
+      max_backfill_results: MAX_BACKFILL_RESULTS,
+      backfill_verify_limit: BACKFILL_VERIFY_LIMIT,
+      meta_median_speed: pokemon.meta_median_speed,
+      meta_speed_basis: pokemon.meta_speed_basis,
+      role_vocabulary: ROLE_VOCABULARY,
+      sweeper_min_offensive_sp: SWEEPER_MIN_OFFENSIVE_SP,
+      sweeper_min_damaging_moves: SWEEPER_MIN_DAMAGING_MOVES,
     },
   };
 }
@@ -611,7 +1856,17 @@ module.exports = {
   buildPokemonSwaps,
   teamValueOf,
   getLearnset,
+  // Exported for isolation tests: deriveRole and intimidatedAttackerRow are the
+  // two pieces whose correctness cannot be read off the output, since one is a
+  // classification and the other silently returns null when it cannot be exact.
+  deriveRole,
+  intimidatedAttackerRow,
+  calcWithField,
+  comparativeDelta,
   MIN_DAMAGE_GAIN,
   TEAM_VALUE_FLOOR,
   NEVER_SUGGEST,
+  ROLE_VOCABULARY,
+  SWEEPER_MIN_OFFENSIVE_SP,
+  SWEEPER_MIN_DAMAGING_MOVES,
 };

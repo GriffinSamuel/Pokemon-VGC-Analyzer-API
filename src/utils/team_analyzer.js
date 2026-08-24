@@ -1169,6 +1169,16 @@ function damagePercentRange(attackerRow, attackerSide, defenderRow, defenderSide
       item: attackerSide.item || '', ability: attackerSide.ability || attackerRow.ability || '',
       baseStats: { hp: attackerRow.hp, atk: attackerRow.atk, def: attackerRow.def, spa: attackerRow.spa, spd: attackerRow.spd, spe: attackerRow.spe },
       types: [attackerRow.type1, attackerRow.type2].filter(Boolean),
+      // Game state for the variable-base-power moves. Every one of these is
+      // optional and defaults to the turn-one case; supplying them is how a
+      // caller asks for "Last Respects with two allies down" or "Fury Cutter on
+      // its third consecutive turn". Until this existed, Last Respects resolved
+      // at its 50 BP floor in every line of output the product produced.
+      side: attackerSide.faintedCount != null ? { faintedCount: attackerSide.faintedCount } : undefined,
+      timesHit: attackerSide.timesHit,
+      hpFraction: attackerSide.hpFraction,
+      status: attackerSide.status || '',
+      consecutiveUses: attackerSide.consecutiveUses,
     },
     defender: {
       name: defenderRow.name, nature: defenderSide.nature || 'Hardy', sp: defenderSide.sp || {},
@@ -1180,12 +1190,47 @@ function damagePercentRange(attackerRow, attackerSide, defenderRow, defenderSide
       // swap candidate currently being recommended) and Grimmsnarl both run it.
       baseStats: { hp: defenderRow.hp, atk: defenderRow.atk, def: defenderRow.def, spa: defenderRow.spa, spd: defenderRow.spd, spe: defenderRow.spe },
       types: [defenderRow.type1, defenderRow.type2].filter(Boolean),
+      // Brine, Wring Out and Hard Press scale with the TARGET's remaining HP;
+      // Hex and Venoshock with its status.
+      hpFraction: defenderSide.hpFraction,
+      status: defenderSide.status || '',
     },
     move: moveData,
     isDouble: true,
     weather: activeWeather || null,
   });
-  return { min: round(result.minPercent, 1), max: round(result.maxPercent, 1) };
+  return {
+    min: round(result.minPercent, 1),
+    max: round(result.maxPercent, 1),
+    bp_unresolved: result.bp_unresolved === true,
+    base_power_used: result.base_power_used,
+    // Focus Sash disclosure. The calculator already caps the reported percentage
+    // below 100 so every `min >= 100` consumer is correct without knowing about
+    // the item — but a capped 99.3-99.3% printed bare reads as a coincidence
+    // rather than as "this would have killed and the Sash held".
+    sash_prevents_ohko: result.sash_prevents_ohko === true,
+    raw_min_percent: result.raw_min_percent,
+    raw_max_percent: result.raw_max_percent,
+    multi_hit: result.multi_hit || null,
+  };
+}
+
+// Orb + ability combinations where the status is the POINT of the set, not a
+// misfortune. A Guts Flame Orb user is burned on purpose: Facade is 140 BP and
+// Attack is boosted 1.5x, and reporting it unburned describes a set nobody runs.
+const SELF_STATUS_ABILITIES = {
+  'Flame Orb': { status: 'brn', abilities: new Set(['guts', 'quick feet', 'flare boost', 'marvel scale', 'magic guard']) },
+  'Toxic Orb': { status: 'tox', abilities: new Set(['guts', 'quick feet', 'toxic boost', 'poison heal', 'marvel scale', 'magic guard']) },
+};
+
+/**
+ * The status a Pokemon will actually be in, derived from its own item + ability
+ * rather than assumed. Returns '' when nothing self-inflicts.
+ */
+function selfInflictedStatus(item, ability) {
+  const entry = SELF_STATUS_ABILITIES[item];
+  if (!entry) return '';
+  return entry.abilities.has(String(ability || '').toLowerCase()) ? entry.status : '';
 }
 
 function findRedirectionMitigation(team, threatenedPokemon) {
@@ -1625,6 +1670,7 @@ module.exports = {
   analyzeArchetypeMatchups,
   analyzeMatchups,
   getLegalPokemonSet,
+  selfInflictedStatus,
   buildWideGuardSynergy,
   buildWideGuardSynergies,
   buildRagePowderSynergy,

@@ -39,6 +39,7 @@ const GLOBALS = new Set([
   'clearTimeout', 'setInterval', 'clearInterval', 'setImmediate', 'BigInt',
   'process', 'console', 'Buffer', 'structuredClone', 'queueMicrotask', 'fetch',
   'URL', 'URLSearchParams', 'AbortController', 'TextEncoder', 'TextDecoder',
+  'Function', 'Proxy', 'Reflect', 'globalThis', 'Intl', 'WeakRef',
 ]);
 
 function declaredNames(src) {
@@ -66,6 +67,19 @@ function declaredNames(src) {
   while ((m = destructure.exec(src)) !== null) {
     for (const part of m[1].split(',')) {
       const piece = part.split(':').pop().split('=')[0].trim();
+      if (/^[A-Za-z_$][\w$]*$/.test(piece)) names.add(piece);
+    }
+  }
+
+  // ARRAY destructuring, including inside for-of:
+  //   const [a, b] = pair
+  //   for (const [key, fn] of Object.entries(obj))
+  // Without this, `fn(...)` inside the loop body reads as an undefined call —
+  // which it did for `for (const [moveName, bpAt] of Object.entries(...))`.
+  const arrayDestructure = /\b(?:const|let|var)\s*\[([^\]]*)\]\s*(?:=|of\b|in\b)/g;
+  while ((m = arrayDestructure.exec(src)) !== null) {
+    for (const part of m[1].split(',')) {
+      const piece = part.replace(/^\s*\.\.\./, '').split('=')[0].trim();
       if (/^[A-Za-z_$][\w$]*$/.test(piece)) names.add(piece);
     }
   }

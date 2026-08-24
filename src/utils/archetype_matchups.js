@@ -34,11 +34,11 @@
 
 const pool = require('../db/pool');
 const { effectivenessAgainst, resistancesOf } = require('./typeChart');
-const { getMostCommonSpread, getCommonSpreads, getSpeciesRow } = require('./ev_observations');
+const { getMostCommonSpread, getCommonSpreads, getCommonItems, getSpeciesRow } = require('./ev_observations');
 const {
-  damagePercentRange, effectiveSpeed, typesOf,
+  damagePercentRange, effectiveSpeed, typesOf, selfInflictedStatus,
 } = require('./team_analyzer');
-const { buildSwaps } = require('./archetype_swaps');
+const { buildSwaps, teamValueOf } = require('./archetype_swaps');
 
 // --- ARCHETYPE DEFINITIONS ---------------------------------------------------
 
@@ -245,8 +245,83 @@ function archetypeWeather(archetype) {
   return null;
 }
 
+// --- DYNAMIC BASE POWER LADDERS ----------------------------------------------
+//
+// Some moves do not have "a" damage number — they have a sequence, and which
+// step you are on is a fact about the battle rather than about the team. Last
+// Respects is 50 BP with everyone alive and 200 with three allies down; Fury
+// Cutter is 40 on its first use and 160 by its fourth.
+//
+// Printing one step as though it were the move is what hid Last Respects at its
+// floor for the entire life of this project. So every step is printed, and each
+// carries how likely it is: turn one and nobody-fainted are guaranteed, the deep
+// end of either ladder is a game that has already gone badly.
+//
+// `weight` is used two ways: to weight the meta rating, and to pick which step a
+// MOVE SWAP is judged on. Swaps use the first step only — recommending a move on
+// the strength of its best case is the "assumes max damage, bad precedent"
+// problem in a different costume.
+const LADDER_WEIGHTS = [1.0, 0.6, 0.3, 0.1];
+
+const DYNAMIC_LADDERS = {
+  'last respects': {
+    axis: 'allies fainted',
+    steps: [0, 1, 2, 3].map((n, i) => ({
+      state: { faintedCount: n },
+      bp: 50 + 50 * n,
+      note: n === 0 ? 'no allies down' : `${n} all${n === 1 ? 'y' : 'ies'} down`,
+      weight: LADDER_WEIGHTS[i],
+    })),
+  },
+  'rage fist': {
+    axis: 'times hit',
+    steps: [0, 1, 2, 3].map((n, i) => ({
+      state: { timesHit: n },
+      bp: Math.min(350, 50 + 50 * n),
+      note: n === 0 ? 'not yet hit' : `hit ${n} time${n === 1 ? '' : 's'}`,
+      weight: LADDER_WEIGHTS[i],
+    })),
+  },
+};
+
+// Consecutive-use moves share one shape, so build them rather than repeat it.
+// The weighting is deliberately the reverse of Last Respects: turn one is the
+// guaranteed case and every turn after it requires the previous one to have
+// survived, been chosen again, and not been switched out of.
+const CONSECUTIVE_LADDER_BP = {
+  'fury cutter': (n) => Math.min(160, 40 * Math.pow(2, n - 1)),
+  'rollout': (n) => Math.min(480, 30 * Math.pow(2, n - 1)),
+  'ice ball': (n) => Math.min(480, 30 * Math.pow(2, n - 1)),
+  'echoed voice': (n) => Math.min(200, 40 * n),
+};
+for (const [moveName, bpAt] of Object.entries(CONSECUTIVE_LADDER_BP)) {
+  DYNAMIC_LADDERS[moveName] = {
+    axis: 'consecutive turns',
+    steps: [1, 2, 3, 4].map((n, i) => ({
+      state: { consecutiveUses: n },
+      bp: bpAt(n),
+      note: n === 1 ? 'first use' : `${n}${n === 2 ? 'nd' : n === 3 ? 'rd' : 'th'} consecutive turn`,
+      weight: LADDER_WEIGHTS[i],
+    })),
+  };
+}
+
+/** The ladder for a move, or null when its power does not vary by battle state. */
+function ladderFor(moveName) {
+  return DYNAMIC_LADDERS[lower(moveName)] || null;
+}
+
+/**
+ * The one step a move-swap decision is allowed to use: the guaranteed one.
+ * Never the best case.
+ */
+function ladderFloorState(moveName) {
+  const ladder = ladderFor(moveName);
+  return ladder ? ladder.steps[0].state : null;
+}
+
 /** One damage result, or null when the move/species can't be resolved. */
-async function calcThreatDamage(attackerEntry, moveName, defenderMember, weather) {
+async function calcThreatDamage(attackerEntry, moveName, defenderMember, weather, state) {
   // Accepts either shape for the same reason as calcOurDamage below.
   const attackerName = lower(attackerEntry.pokemon || attackerEntry.name);
   if (!attackerName) return null;
@@ -255,12 +330,18 @@ async function calcThreatDamage(attackerEntry, moveName, defenderMember, weather
   const moveRow = await getMoveRowCached(moveName);
   if (!moveRow || !moveRow.power) return null;
   const spread = await getSpreadCached(attackerName);
+  const item = attackerEntry.top_item || '';
+  const ability = attackerEntry.top_ability || '';
   const attackerSide = {
     nature: spread?.nature || 'Hardy',
     sp: spread?.sp || {},
-    item: attackerEntry.top_item || '',
-    ability: attackerEntry.top_ability || '',
+    item,
+    ability,
     ivs: { hp: 31 },
+    // A Guts Flame Orb user is burned on purpose — Facade is 140 BP and its
+    // Attack is up 1.5x. Assuming it unburned describes a set nobody plays.
+    status: selfInflictedStatus(item, ability),
+    ...(state || {}),
   };
   const defenderSide = {
     nature: defenderMember.nature,
@@ -286,7 +367,7 @@ async function calcThreatDamage(attackerEntry, moveName, defenderMember, weather
  * against anything running Assault Vest, Eviolite or a resist berry — the exact
  * targets where knowing whether we OHKO actually matters.
  */
-async function calcOurDamage(member, mv, targetEntry, weather) {
+async function calcOurDamage(member, mv, targetEntry, weather, state) {
   // Threat objects from buildKeyThreats use `.pokemon`; raw meta entries from
   // buildArchetypeMeta use `.name`. This function was written against the second
   // shape and called with the first, so every lookup resolved "undefined",
@@ -296,13 +377,26 @@ async function calcOurDamage(member, mv, targetEntry, weather) {
   const targetRow = await getSpeciesCached(targetName);
   if (!targetRow) return null;
   const spread = await getSpreadCached(targetName);
-  const attackerSide = { nature: member.nature, item: member.item, ability: member.ability, sp: member.sp, ivs: { hp: 31 } };
+  const attackerSide = {
+    nature: member.nature,
+    item: member.item,
+    ability: member.ability,
+    sp: member.sp,
+    ivs: { hp: 31 },
+    status: selfInflictedStatus(member.item, member.ability),
+    ...(state || {}),
+  };
+  const targetItem = targetEntry.item || targetEntry.top_item || '';
+  const targetAbility = targetEntry.ability || targetEntry.top_ability || '';
   const targetSide = {
     nature: spread?.nature || 'Hardy',
     sp: spread?.sp || {},
-    item: targetEntry.item || targetEntry.top_item || '',
-    ability: targetEntry.ability || targetEntry.top_ability || '',
+    item: targetItem,
+    ability: targetAbility,
     ivs: { hp: 31 },
+    // Matters for our Hex and Venoshock: a Guts Toxic Orb target really is
+    // poisoned, so those moves are at 130 BP against it, not 65.
+    status: selfInflictedStatus(targetItem, targetAbility),
   };
   try {
     const dmg = damagePercentRange(member.pokemonRow, attackerSide, targetRow, targetSide, mv.move, weather);
@@ -422,45 +516,80 @@ async function offensiveInvestment(nameLower) {
 
 // --- KO COVERAGE --------------------------------------------------------------
 //
-// "OHKOs it" against the single most common spread is a half-answer: the
-// question in practice is how many of the sets you might actually face it beats,
-// and which one breaks it. Walks every observed spread, not just the modal one.
+// "OHKOs it" against the single most common spread is a half-answer, and the
+// half it gives is misleading in a specific way: the modal spread is often only
+// 10-20% of what that species actually runs, so quoting its frequency reads as
+// "this KO works 11% of the time" when the move in fact beats most of the
+// frailer spreads too. What matters is the total share of sets beaten, and the
+// BULKIEST set that stops the KO — that last one is the threshold a player can
+// actually build against.
+//
+// Crosses spreads x items. Holding the item fixed at the modal one was its own
+// distortion: a Choice Scarf Basculegion and an Assault Vest Basculegion are not
+// the same defensive object, and the AV set is exactly the one that survives.
 async function koCoverage(member, mv, threat, weather) {
   const nameLower = lower(threat.pokemon);
   const data = await getCommonSpreads(nameLower).catch(() => null);
   const targetRow = await getSpeciesCached(nameLower);
   if (!data || !targetRow || data.spreads.length === 0) return null;
 
-  const attackerSide = { nature: member.nature, item: member.item, ability: member.ability, sp: member.sp, ivs: { hp: 31 } };
+  const items = await getCommonItems(nameLower).catch(() => []);
+  // Fall back to the threat's own item when the item sample is empty, so the
+  // walk never silently becomes itemless — itemless inflates our damage against
+  // exactly the Assault Vest and berry sets where the answer matters.
+  const itemOptions = (items && items.length > 0)
+    ? items.map((i) => ({ item: i.item, frequency: i.frequency || 0 }))
+    : [{ item: threat.item || '', frequency: 1 }];
+
+  const attackerSide = {
+    nature: member.nature, item: member.item, ability: member.ability, sp: member.sp, ivs: { hp: 31 },
+    status: selfInflictedStatus(member.item, member.ability),
+    ...(ladderFloorState(mv.move) || {}),
+  };
   const bulk = (sp) => (sp.hp || 0) + Math.max(sp.def || 0, sp.spd || 0);
 
   let covered = 0;
   let totalFreq = 0;
   let worstBeaten = null;
   let firstSurvivor = null;
+  let combosSeen = 0;
 
   for (const entry of data.spreads) {
+    for (const io of itemOptions) {
+    // Joint weight of this spread AND this item. Neither distribution is
+    // conditioned on the other in the data we hold, so this is a product of
+    // marginals, not an observed joint frequency — stated here because treating
+    // it as observed would overclaim.
+    const jointFreq = (entry.frequency || 0) * (io.frequency || 0);
     const side = {
       nature: entry.nature || 'Hardy',
       sp: entry.sp || {},
-      item: threat.item || '',
+      item: io.item || '',
       ability: threat.ability || '',
       ivs: { hp: 31 },
+      status: selfInflictedStatus(io.item, threat.ability),
     };
     let dmg = null;
     try {
       dmg = damagePercentRange(member.pokemonRow, attackerSide, targetRow, side, mv.move, weather);
     } catch (_err) { continue; }
     if (!dmg) continue;
-    totalFreq += entry.frequency || 0;
-    const label = `${entry.sp?.hp || 0}HP/${entry.sp?.def || 0}Def/${entry.sp?.spd || 0}SpD ${entry.nature || 'Hardy'}`;
+    combosSeen += 1;
+    totalFreq += jointFreq;
+    const itemLabel = io.item ? ` @ ${io.item}` : '';
+    const label = `${entry.sp?.hp || 0}HP/${entry.sp?.def || 0}Def/${entry.sp?.spd || 0}SpD ${entry.nature || 'Hardy'}${itemLabel}`;
     if (dmg.min >= 100) {
-      covered += entry.frequency || 0;
+      covered += jointFreq;
       if (!worstBeaten || bulk(entry.sp || {}) > worstBeaten.bulk) {
         worstBeaten = { label, bulk: bulk(entry.sp || {}), range: `${dmg.min}-${dmg.max}%` };
       }
     } else if (!firstSurvivor || bulk(entry.sp || {}) < firstSurvivor.bulk) {
+      // The LEAST invested set that survives. That is the threshold a player
+      // actually builds to — "put this much in and the KO stops" — whereas the
+      // bulkiest survivor is just the bulkiest set in the sample and says
+      // nothing about where the boundary is.
       firstSurvivor = { label, bulk: bulk(entry.sp || {}), range: `${dmg.min}-${dmg.max}%` };
+    }
     }
   }
 
@@ -468,8 +597,81 @@ async function koCoverage(member, mv, threat, weather) {
   return {
     covered_pct: covered / totalFreq,
     sets_seen: data.spreads.length,
+    items_seen: itemOptions.length,
+    combos_seen: combosSeen,
     worst_beaten: worstBeaten,
     breaks_on: firstSurvivor,
+  };
+}
+
+/**
+ * The mirror of koCoverage, pointed the other way: of all the sets THIS meta
+ * Pokemon is observed running, what share actually land the KO on our member?
+ *
+ * "Pelipper OHKOs Charizard-Mega-Y with Weather Ball" is a different warning if
+ * 84% of Pelippers manage it than if one Choice Specs spread does, and the line
+ * read identically for both.
+ */
+async function threatKoCoverage(entry, moveName, ourMember, weather) {
+  const nameLower = lower(entry.name || entry.pokemon);
+  const data = await getCommonSpreads(nameLower).catch(() => null);
+  const attackerRow = await getSpeciesCached(nameLower);
+  if (!data || !attackerRow || data.spreads.length === 0) return null;
+
+  const items = await getCommonItems(nameLower).catch(() => []);
+  const itemOptions = (items && items.length > 0)
+    ? items.map((i) => ({ item: i.item, frequency: i.frequency || 0 }))
+    : [{ item: entry.top_item || '', frequency: 1 }];
+
+  const ability = entry.top_ability || '';
+  const defenderSide = {
+    nature: ourMember.nature, sp: ourMember.sp, item: ourMember.item,
+    ability: ourMember.ability, ivs: { hp: 31 },
+    status: selfInflictedStatus(ourMember.item, ourMember.ability),
+  };
+
+  let covered = 0;
+  let totalFreq = 0;
+  let hardest = null;
+
+  for (const spreadEntry of data.spreads) {
+    for (const io of itemOptions) {
+      const jointFreq = (spreadEntry.frequency || 0) * (io.frequency || 0);
+      const attackerSide = {
+        nature: spreadEntry.nature || 'Hardy',
+        sp: spreadEntry.sp || {},
+        item: io.item || '',
+        ability,
+        ivs: { hp: 31 },
+        status: selfInflictedStatus(io.item, ability),
+        ...(ladderFloorState(moveName) || {}),
+      };
+      let dmg = null;
+      try {
+        dmg = damagePercentRange(attackerRow, attackerSide, ourMember.pokemonRow, defenderSide, moveName, weather);
+      } catch (_err) { continue; }
+      if (!dmg) continue;
+      totalFreq += jointFreq;
+      if (dmg.min >= 100) {
+        covered += jointFreq;
+        if (!hardest || dmg.max > hardest.max) {
+          const itemLabel = io.item ? ` @ ${io.item}` : '';
+          hardest = {
+            max: dmg.max,
+            label: `${spreadEntry.sp?.atk || 0}Atk/${spreadEntry.sp?.spa || 0}SpA ${spreadEntry.nature || 'Hardy'}${itemLabel}`,
+            range: `${dmg.min}-${dmg.max}%`,
+          };
+        }
+      }
+    }
+  }
+
+  if (totalFreq === 0) return null;
+  return {
+    covered_pct: covered / totalFreq,
+    sets_seen: data.spreads.length,
+    items_seen: itemOptions.length,
+    hardest_set: hardest,
   };
 }
 
@@ -503,6 +705,12 @@ async function buildKeyThreats(bucket, ourKeys, weather, weathers) {
 
     let damagingMoves = 0;
     const reasons = [];
+    // Structured alongside the display strings. `reasons` is prose meant for a
+    // human; matching Pokemon names inside it with .includes() is how the Snow
+    // lose condition came to read "They remove Charizard-Mega-Y (Incineroar
+    // OHKOs Venusaur ...)" — the string contained "Charizard-Mega-Y" only
+    // because the WEATHER LABEL said "in our Sun (Charizard-Mega-Y)".
+    const ohkoTargets = [];
     const ohkoLines = [];
     let quadOn = null;
     let bestSpeed = null;
@@ -533,7 +741,23 @@ async function buildKeyThreats(bucket, ourKeys, weather, weathers) {
         for (const w of weathers) {
           const dmg = await calcThreatDamage(entry, mvEntry.move, key, w.weather);
           if (dmg && dmg.min >= 100) {
-            ohkoLines.push(`OHKOs ${key.pokemon} with ${mvEntry.move} in ${w.source} (${dmg.min}-${dmg.max}%)`);
+            // How many of the sets of THIS threat actually get the KO. "Pelipper
+            // OHKOs Charizard" is a different warning if 84% of Pelippers do it
+            // than if one niche spread does, and the line read identically for
+            // both.
+            const cov = await threatKoCoverage(entry, mvEntry.move, key, w.weather);
+            const covNote = cov
+              ? ` — ${(cov.covered_pct * 100).toFixed(0)}% of its ${cov.sets_seen} observed sets get this KO`
+              : '';
+            ohkoLines.push(`OHKOs ${key.pokemon} with ${mvEntry.move} in ${w.source} (${dmg.min}-${dmg.max}%)${covNote}`);
+            ohkoTargets.push({
+              our: key.pokemon,
+              move: mvEntry.move,
+              weather: w.weather,
+              weather_source: w.source,
+              damage_range: `${dmg.min}-${dmg.max}%`,
+              coverage: cov,
+            });
           }
         }
       }
@@ -571,6 +795,9 @@ async function buildKeyThreats(bucket, ourKeys, weather, weathers) {
       top_moves: entry.top_moves.map((m) => m.move),
       is_sweeper: sweeper,
       speed_control: speedControl,
+      // Which of OUR Pokemon this threat guarantees a KO on, structurally.
+      // Never re-derive this by searching `reasons` for a name.
+      ohkos_our: ohkoTargets,
       offensive_investment: investment,
       reasons,
     });
@@ -685,8 +912,28 @@ async function buildCounters(team, threats, weather, weathers) {
           const ourType = resolveTypeFor(mv.move, mv.type, member.ability, memberWeather);
           const eff = effectivenessAgainst(ourType, threatTypes);
           calcAttempts += 1;
-          const dmg = await calcOurDamage(member, mv, threat, memberWeather);
+          // Ladder moves are calculated at their GUARANTEED step for the headline
+          // number, with every other step attached. A swap or a rating built on
+          // step 4 would be built on a game that has already gone badly.
+          const ladder = ladderFor(mv.move);
+          const dmg = await calcOurDamage(member, mv, threat, memberWeather, ladderFloorState(mv.move));
           if (!dmg) { calcFailures += 1; continue; }
+
+          let ladderSteps = null;
+          if (ladder) {
+            ladderSteps = [];
+            for (const step of ladder.steps) {
+              const stepDmg = await calcOurDamage(member, mv, threat, memberWeather, step.state);
+              if (!stepDmg) continue;
+              ladderSteps.push({
+                note: step.note,
+                bp: step.bp,
+                weight: step.weight,
+                damage_range: `${stepDmg.min}-${stepDmg.max}%`,
+                ohko: stepDmg.min >= 100,
+              });
+            }
+          }
 
           const base = {
             pokemon: member.pokemon,
@@ -707,6 +954,17 @@ async function buildCounters(team, threats, weather, weathers) {
             // printed identically regardless until this was carried through.
             target_build_frequency: spread?.frequency ?? null,
             target_observations: spread?.total_observations ?? null,
+            // Present only for moves whose power depends on battle state.
+            ladder: ladderSteps && ladderSteps.length > 0 ? { axis: ladder.axis, steps: ladderSteps } : null,
+            // True when the move's real power could not be determined at all
+            // (multi-hit, ally/turn state). The number above is the table BP and
+            // must not be presented as this move's damage.
+            bp_unresolved: dmg.bp_unresolved === true,
+            base_power_used: dmg.base_power_used,
+            sash_prevents_ohko: dmg.sash_prevents_ohko === true,
+            raw_min_percent: dmg.raw_min_percent,
+            raw_max_percent: dmg.raw_max_percent,
+            multi_hit: dmg.multi_hit || null,
           };
 
           if (dmg.min >= 100) {
@@ -724,12 +982,33 @@ async function buildCounters(team, threats, weather, weathers) {
   // Collapse duplicates: if a move does the same damage in rain and in sun, one
   // line says so rather than three identical ones.
   const collapse = (list) => {
+    // How many distinct weathers this attacker/move/target triple was calculated
+    // in at all. Needed to tell "same number in all of them" (weather is
+    // irrelevant here, say nothing) from "we only ran one weather".
+    const weatherCount = new Map();
+    for (const e of list) {
+      const t = `${e.pokemon}|${e.move}|${e.target}`;
+      if (!weatherCount.has(t)) weatherCount.set(t, new Set());
+      if (e.weather_source) weatherCount.get(t).add(e.weather_source);
+    }
+
     const byKey = new Map();
     for (const e of list) {
       const key = `${e.pokemon}|${e.move}|${e.target}|${e.damage_range}|${e.move_type}`;
       if (!byKey.has(key)) { byKey.set(key, { ...e, weathers: [] }); }
       const kept = byKey.get(key);
       if (e.weather_source && !kept.weathers.includes(e.weather_source)) kept.weathers.push(e.weather_source);
+    }
+
+    // A weather tag on a number that is the same in every weather is noise that
+    // reads as a claim — "[their Rain / our Sun]" on one line looks like one calc
+    // asserting two contradictory weathers. Only say it when it MATTERS: when
+    // the weathers give different numbers, or when the move's TYPE is
+    // weather-derived (Weather Ball) and so the weather is itself the finding.
+    for (const kept of byKey.values()) {
+      const total = weatherCount.get(`${kept.pokemon}|${kept.move}|${kept.target}`)?.size || 0;
+      const typeIsWeatherDerived = kept.move === 'Weather Ball' || kept.move === 'Terrain Pulse';
+      kept.weather_independent = total > 1 && kept.weathers.length === total && !typeIsWeatherDerived;
     }
     return [...byKey.values()];
   };
@@ -854,9 +1133,10 @@ async function buildConditions(archetype, team, threats, bucket, weather, counte
       } else if (outsped.length > 0) {
         lose.push(`Losing the ${weatherOfArchetype} war only matters if ${[...backups, ...weatherMoveBackups].map((m) => m.pokemon).join('/')} is also removed — until then we can re-set it after their setter lands`);
       }
-      const removable = ourMatching.filter((m) => threats.some((t) => t.reasons.some((r) => r.includes(m.pokemon))));
+      // Structured match, not a substring search of a display string.
+      const removable = ourMatching.filter((m) => threats.some((t) => (t.ohkos_our || []).some((o) => o.our === m.pokemon)));
       for (const m of removable) {
-        const killer = threats.find((t) => t.reasons.some((r) => r.includes(m.pokemon)));
+        const killer = threats.find((t) => (t.ohkos_our || []).some((o) => o.our === m.pokemon));
         lose.push(`Losing ${m.pokemon} to ${killer.pokemon} — our ${weatherOfArchetype} stops coming back while theirs keeps re-setting`);
       }
       if (outsped.length === 0 && removable.length === 0) {
@@ -864,9 +1144,18 @@ async function buildConditions(archetype, team, threats, bucket, weather, counte
       }
     } else {
       const primary = ourSetters[0];
-      const threatensSetter = threats.find((t) => t.reasons.some((r) => r.includes(primary.pokemon)));
+      // Was `t.reasons.some(r => r.includes(primary.pokemon))`, and it matched a
+      // Pokemon name out of a WEATHER LABEL: Incineroar's reason string reads
+      // "OHKOs Venusaur with Flare Blitz in our Sun (Charizard-Mega-Y)", which
+      // contains "Charizard-Mega-Y", so the Snow lose condition claimed they
+      // remove Charizard while quoting a kill on Venusaur. The structured list
+      // cannot make that mistake, and it also lets us quote the RIGHT line.
+      const threatensSetter = threats.find((t) => (t.ohkos_our || []).some((o) => o.our === primary.pokemon));
+      const killLine = threatensSetter
+        ? (threatensSetter.ohkos_our.find((o) => o.our === primary.pokemon) || {})
+        : {};
       lose.push(threatensSetter
-        ? `They remove ${primary.pokemon} (${threatensSetter.pokemon} ${threatensSetter.reasons[0]}), and with our only ${[...ourWeathers][0]} setter gone their ${weatherOfArchetype} is permanent`
+        ? `They remove ${primary.pokemon} (${threatensSetter.pokemon}'s ${killLine.move} — ${killLine.damage_range} in ${killLine.weather_source}), and with our only ${[...ourWeathers][0]} setter gone their ${weatherOfArchetype} is permanent`
         : `They OHKO ${primary.pokemon} before it can set ${[...ourWeathers][0]}, leaving their ${weatherOfArchetype} up for the rest of the game`);
     }
 
@@ -1164,51 +1453,124 @@ function weakestMembersFor(perMember) {
 //   0.50  do we OHKO it
 //   0.30  does at least one key Pokemon survive its best hit
 //   0.20  do we outspeed it  (INVERTED under Trick Room)
-const LEDGER_WEIGHTS = { ohko: 0.5, survive: 0.3, speed: 0.2 };
+const CELL_WEIGHTS = { we_ohko: 0.4, we_survive: 0.4, speed: 0.2 };
 const FAVORABLE_AT = 0.6;
 const UNFAVORABLE_BELOW = 0.3;
 
-async function buildThreatLedger(team, ourKeys, threats, counters, archetype, weatherAnalysis, weather) {
+// Speed is worth more when it decides something. Outspeeding a Pokemon you can
+// kill converts the speed into the kill; outspeeding one that can ALSO kill you
+// is the difference between winning the exchange and losing it outright. Both
+// multipliers agreed with the format owner.
+const SPEED_MATTERS_MULT = 2;      // we outspeed something we OHKO
+const SPEED_DECIDES_MULT = 4;      // ...and it would have OHKO'd us
+
+/**
+ * Per-member exchange grid.
+ *
+ * WHAT THIS REPLACES AND WHY. The previous ledger asked three questions per
+ * threat about the TEAM, and each one hid the thing it was supposed to report:
+ *
+ *   - `survives` looped our key Pokemon and BROKE on the first one that lived.
+ *     Tyranitar-Mega OHKOs our Charizard at 206.9-243.7%; Kingambit survives; the
+ *     row printed `survive:Y`. One survivor whitewashed the whole column.
+ *   - `speedOk` compared each threat to our single FASTEST Pokemon, so one fast
+ *     member marked every threat outsped regardless of who actually faces it.
+ *   - `worst_damage_taken` was computed and never used in the score. There was
+ *     literally no term for them OHKOing us, which is why five of six archetypes
+ *     rated FAVORABLE while two of Sand's six OHKO our only Mega.
+ *
+ * The grid scores every one of OUR six against every threat individually, then
+ * rolls up weighted by team value so losing the Mega costs more than losing the
+ * most expendable member — the same team-value model the swap logic already uses
+ * to decide who is droppable.
+ */
+async function buildExchangeGrid(team, threats, counters, archetype, weatherAnalysis, weather, teamValues) {
   const trickRoom = archetype === TRICK_ROOM_ARCHETYPE;
-  const ourSpeeds = team.map((m) => effectiveSpeed(m, weatherAnalysis));
-  const fastest = Math.max(...ourSpeeds, 0);
-  const slowest = Math.min(...ourSpeeds, Infinity);
 
   const rows = [];
+  const perMemberDeaths = new Map();
+  let calcFailures = 0;
+
   for (const threat of threats) {
-    const ohko = counters.ohkos.some((o) => o.target === threat.pokemon);
+    const threatSpeed = threat.speed;
+    const cells = [];
 
-    // Does anything we consider a win condition live through its best hit?
-    let survives = false;
-    let worstTaken = 0;
-    for (const key of ourKeys) {
-      let survivesThis = true;
-      for (const moveName of threat.top_moves.slice(0, 3)) {
-        const dmg = await calcThreatDamage(threat, moveName, key, weather);
-        if (!dmg) continue;
-        if (dmg.max > worstTaken) worstTaken = dmg.max;
-        if (dmg.min >= 100) survivesThis = false;
+    for (const member of team) {
+      // Do they guarantee a KO on this member? Guaranteed means min >= 100 —
+      // the format owner's call. A roll that only sometimes kills is reported
+      // separately rather than counted as a kill.
+      let theyOhko = false;
+      let theirBest = 0;
+      let killingMove = null;
+      for (const moveName of threat.top_moves.slice(0, 4)) {
+        const dmg = await calcThreatDamage(threat, moveName, member, weather);
+        if (!dmg) { calcFailures += 1; continue; }
+        if (dmg.max > theirBest) theirBest = dmg.max;
+        if (dmg.min >= 100 && !theyOhko) { theyOhko = true; killingMove = { move: moveName, range: `${dmg.min}-${dmg.max}%` }; }
       }
-      if (survivesThis) { survives = true; break; }
+      // Focus Sash counts as surviving — the calculator already caps a single
+      // hit below 100% for a Sash holder at full HP, so `min >= 100` is false
+      // and this falls out for free rather than needing a special case.
+
+      // Do we guarantee a KO back? Reuse the counters pass rather than
+      // recalculating — it already walked every move in every plausible weather.
+      const ourKill = counters.ohkos.find((o) => o.pokemon === member.pokemon && o.target === threat.pokemon);
+      const weOhko = Boolean(ourKill);
+
+      const ourSpeed = effectiveSpeed(member, weatherAnalysis);
+      const weMoveFirst = threatSpeed == null
+        ? null
+        : (trickRoom ? ourSpeed < threatSpeed : ourSpeed > threatSpeed);
+
+      // Speed's weight escalates with what it decides.
+      let speedWeight = CELL_WEIGHTS.speed;
+      if (weMoveFirst && weOhko) speedWeight *= SPEED_MATTERS_MULT;
+      if (weMoveFirst && weOhko && theyOhko) speedWeight *= (SPEED_DECIDES_MULT / SPEED_MATTERS_MULT);
+
+      const raw = CELL_WEIGHTS.we_ohko * (weOhko ? 1 : 0)
+        + CELL_WEIGHTS.we_survive * (theyOhko ? 0 : 1)
+        + speedWeight * (weMoveFirst ? 1 : 0);
+      // Normalise against what this cell could have scored, so escalating the
+      // speed term does not silently inflate every cell that happens to be fast.
+      const cellMax = CELL_WEIGHTS.we_ohko + CELL_WEIGHTS.we_survive + speedWeight;
+      const score = cellMax > 0 ? raw / cellMax : 0;
+
+      if (theyOhko) {
+        perMemberDeaths.set(member.pokemon, (perMemberDeaths.get(member.pokemon) || 0) + (threat.usage || 0));
+      }
+
+      cells.push({
+        our: member.pokemon,
+        they_ohko_us: theyOhko,
+        their_killing_move: killingMove,
+        their_best_damage: theirBest,
+        we_ohko_them: weOhko,
+        our_killing_move: ourKill ? { move: ourKill.move, range: ourKill.damage_range } : null,
+        we_move_first: weMoveFirst,
+        our_speed: ourSpeed,
+        team_value: teamValues.get(member.pokemon)?.score ?? 0,
+        score,
+      });
     }
 
-    let speedOk = false;
-    if (threat.speed != null) {
-      speedOk = trickRoom ? slowest < threat.speed : fastest > threat.speed;
-    }
+    // Roll the row up weighted by team value. A floor keeps the least valuable
+    // member from being effectively ignored — without it Kingambit's 15 against
+    // Charizard's 214 makes its death almost invisible to the rating.
+    const TEAM_VALUE_MIN_WEIGHT = 20;
+    const weightOfCell = (c) => Math.max(c.team_value, TEAM_VALUE_MIN_WEIGHT);
+    const wSum = cells.reduce((s, c) => s + weightOfCell(c), 0);
+    const rowScore = wSum > 0 ? cells.reduce((s, c) => s + weightOfCell(c) * c.score, 0) / wSum : 0;
 
-    const score = LEDGER_WEIGHTS.ohko * (ohko ? 1 : 0)
-      + LEDGER_WEIGHTS.survive * (survives ? 1 : 0)
-      + LEDGER_WEIGHTS.speed * (speedOk ? 1 : 0);
+    const killed = cells.filter((c) => c.they_ohko_us).map((c) => c.our);
+    const killers = cells.filter((c) => c.we_ohko_them).map((c) => c.our);
 
     rows.push({
       pokemon: threat.pokemon,
       usage: threat.usage,
-      ohko,
-      survives,
-      speed_ok: speedOk,
-      worst_damage_taken: worstTaken,
-      score,
+      cells,
+      ohkos_our: killed,
+      ohko_d_by_our: killers,
+      score: rowScore,
     });
   }
 
@@ -1221,7 +1583,21 @@ async function buildThreatLedger(team, ourKeys, threats, counters, archetype, we
     : weighted < UNFAVORABLE_BELOW ? 'unfavorable'
       : 'even';
 
-  return { rating, weighted_score: weighted, rows };
+  // The single most useful line in the section: which of ours dies to the most
+  // of the archetype, by usage.
+  let weakestLink = null;
+  for (const [name, usageSum] of perMemberDeaths.entries()) {
+    if (!weakestLink || usageSum > weakestLink.usage_sum) weakestLink = { pokemon: name, usage_sum: usageSum };
+  }
+
+  return {
+    rating,
+    weighted_score: weighted,
+    rows,
+    weakest_link: weakestLink,
+    calc_failures: calcFailures,
+    cell_weights: { ...CELL_WEIGHTS, speed_matters_mult: SPEED_MATTERS_MULT, speed_decides_mult: SPEED_DECIDES_MULT },
+  };
 }
 
 async function analyzeArchetypeMatchupsLive(team, weatherAnalysis, synergies, legalPokemonSet, fieldOpts) {
@@ -1261,7 +1637,13 @@ async function analyzeArchetypeMatchupsLive(team, weatherAnalysis, synergies, le
       swaps = { archetype, moves: [], items: [], pokemon: [], error: err.message };
     }
 
-    const ledger = await buildThreatLedger(team, ourKeys, threats, counters, archetype, weatherAnalysis, weather);
+    // Same team-value model the swap logic uses to decide who is droppable, so
+    // the rating and the swap suggestions cannot disagree about which member
+    // this team cannot afford to lose.
+    const teamValues = new Map();
+    for (const m of team) teamValues.set(m.pokemon, teamValueOf(m, team, synergies));
+
+    const ledger = await buildExchangeGrid(team, threats, counters, archetype, weatherAnalysis, weather, teamValues);
 
     results.push({
       archetype,

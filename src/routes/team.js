@@ -1128,12 +1128,32 @@ function buildTeamBuildText(responseBody, team) {
     const scoreNote = led ? `  [${(led.weighted_score * 100).toFixed(0)}/100 usage-weighted]` : '';
     lines.push(`${m.archetype}: ${m.matchup_rating.toUpperCase()}${scoreNote}  (${m.meta_team_count} teams in this archetype)`);
     if (led) {
-      // The ledger is printed so the rating can be argued with rather than
-      // taken on trust: KO / survive / outspeed per threat, weighted by usage.
-      lines.push('  Rating ledger (0.5 OHKO + 0.3 survive + 0.2 outspeed, weighted by usage):');
+      // The full grid, printed so the rating can be argued with rather than
+      // taken on trust. Every one of our 6 against every threat: the old
+      // three-boolean ledger collapsed this and hid the fact that two of Sand's
+      // six OHKO our only Mega while the row still read "survive:Y" because
+      // Kingambit happened to live.
+      const cw = led.cell_weights || {};
+      lines.push(`  Exchange grid (${cw.we_ohko} we KO + ${cw.we_survive} we live + ${cw.speed} speed, speed x${cw.speed_matters_mult} if it lands a KO, x${cw.speed_decides_mult} if it also denies theirs; rows weighted by team value):`);
       for (const r of led.rows) {
-        const mark = (ok) => (ok ? 'Y' : '-');
-        lines.push(`    ${r.pokemon.padEnd(22)} ${(r.usage * 100).toFixed(1).padStart(5)}%  KO:${mark(r.ohko)}  survive:${mark(r.survives)}  outspeed:${mark(r.speed_ok)}  -> ${r.score.toFixed(2)}`);
+        lines.push(`    ${r.pokemon.padEnd(22)} ${(r.usage * 100).toFixed(1).padStart(5)}%  -> ${r.score.toFixed(2)}`);
+        const kills = r.ohkos_our.length ? `KOs ours: ${r.ohkos_our.join(', ')}` : 'KOs none of ours';
+        const dies = r.ohko_d_by_our.length ? `KO'd by: ${r.ohko_d_by_our.join(', ')}` : "we KO it with nothing";
+        lines.push(`        ${kills}  |  ${dies}`);
+        for (const c of r.cells) {
+          const marks = [
+            c.they_ohko_us ? `DIES to ${c.their_killing_move?.move} (${c.their_killing_move?.range})` : `survives (worst ${c.their_best_damage}%)`,
+            c.we_ohko_them ? `KOs back with ${c.our_killing_move?.move}` : 'no KO back',
+            c.we_move_first === null ? 'speed unknown' : (c.we_move_first ? `moves first (${c.our_speed})` : `moves second (${c.our_speed})`),
+          ];
+          lines.push(`          ${c.our.padEnd(20)} ${marks.join(' | ')}`);
+        }
+      }
+      if (led.weakest_link) {
+        lines.push(`    weakest link: ${led.weakest_link.pokemon} — dies to ${(led.weakest_link.usage_sum * 100).toFixed(0)}% of this archetype by combined usage`);
+      }
+      if (led.calc_failures > 0) {
+        lines.push(`    (${led.calc_failures} incoming calcs failed to resolve — grid is thinner than it looks)`);
       }
     }
     lines.push(`  Our key Pokemon: ${(m.our_key_pokemon || []).join(', ')}`);
@@ -1143,6 +1163,13 @@ function buildTeamBuildText(responseBody, team) {
       const speed = t.speed != null ? `${t.speed} Spe` : 'Speed unknown';
       lines.push(`    - ${t.pokemon} (${t.types.join('/')}, ${(t.usage * 100).toFixed(1)}% of ${m.archetype} teams, ${speed}${t.ability ? `, ${t.ability}` : ''}${t.item ? `, ${t.item}` : ''})`);
       for (const r of t.reasons || []) lines.push(`        ${r}`);
+      // The hardest set behind each KO, so "OHKOs Charizard" can be read as a
+      // frequency rather than a possibility.
+      for (const o of t.ohkos_our || []) {
+        if (o.coverage?.hardest_set) {
+          lines.push(`            worst case on ${o.our}: ${o.coverage.hardest_set.label} — ${o.coverage.hardest_set.range}`);
+        }
+      }
     }
 
     // Both lists are ordered most damage first, then by how common the opposing
@@ -1193,19 +1220,68 @@ function buildTeamBuildText(responseBody, team) {
     for (const g of attackerGroups) {
       lines.push(`    - ${g.pokemon}:`);
       for (const e of g.entries) {
-        const tag = e.ohko ? 'OHKO' : `${e.multiplier}x`;
+        // Sash-capped hits used to print as "2x ... 99.3-99.3%", which reads as
+        // a coincidence rather than "this would have killed and the Sash held".
+        const sashHeld = e.sash_prevents_ohko === true;
+        const tag = sashHeld ? 'SASH HOLDS' : (e.ohko ? 'OHKO' : `${e.multiplier}x`);
         const type = e.move_type ? `, ${e.move_type}` : '';
-        // Which weather this number assumes — never leave a damage figure
-        // unattributed when more than one weather is live.
-        const wx = (e.weathers && e.weathers.length > 0)
-          ? `  [${e.weathers.join(' / ')}]`
-          : (e.weather ? `  [in ${e.weather}]` : '  [no weather]');
-        lines.push(`        ${tag} vs ${e.target}: ${e.move}${type} — ${e.damage_range} vs ${e.target_build}, ${(e.target_usage * 100).toFixed(1)}% of ${m.archetype} teams${wx}`);
+        // Weather is named only when it CHANGES something — a tag on a number
+        // that is identical in every weather reads as one calc asserting two
+        // contradictory weathers at once.
+        const wx = e.weather_independent
+          ? ''
+          : ((e.weathers && e.weathers.length > 0)
+            ? `  [${e.weathers.join(' / ')}]`
+            : (e.weather ? `  [in ${e.weather}]` : '  [no weather]'));
+        // Attacker named on every line. The group header above scrolls out of
+        // sight in a section this long, and "Sucker Punch vs Basculegion" with
+        // no attacker is unusable.
+        lines.push(`        ${tag} — ${g.pokemon}'s ${e.move}${type} vs ${e.target}: ${e.damage_range} vs ${e.target_build}, ${(e.target_usage * 100).toFixed(1)}% of ${m.archetype} teams${wx}`);
+        if (sashHeld) {
+          lines.push(`            would do ${e.raw_min_percent ?? '?'}-${e.raw_max_percent ?? '?'}% — Focus Sash holds it at 1 HP (once, from full HP only)`);
+        }
         if (e.coverage) {
           const c = e.coverage;
-          const worst = c.worst_beaten ? `through ${c.worst_beaten.label} (${c.worst_beaten.range})` : '';
-          const breaks = c.breaks_on ? `; survives on ${c.breaks_on.label} (${c.breaks_on.range})` : '';
-          lines.push(`            KOs ${(c.covered_pct * 100).toFixed(0)}% of ${c.sets_seen} observed sets ${worst}${breaks}`);
+          // The headline is the SHARE OF SETS BEATEN and the THRESHOLD that stops
+          // it — not how common one particular spread is. Quoting the modal
+          // spread's frequency read as "this KO works 11% of the time" when the
+          // move in fact beat most of the frailer spreads too.
+          const across = `across ${c.sets_seen} spread${c.sets_seen === 1 ? '' : 's'} x ${c.items_seen} item${c.items_seen === 1 ? '' : 's'}`;
+          lines.push(`            KOs ${(c.covered_pct * 100).toFixed(0)}% of observed sets (${across})`);
+          if (c.breaks_on) {
+            lines.push(`            stops KOing at ${c.breaks_on.label} — ${c.breaks_on.range}`);
+          } else if (c.covered_pct >= 1) {
+            lines.push('            no observed set survives it');
+          }
+          if (c.worst_beaten) {
+            lines.push(`            still KOs through ${c.worst_beaten.label} (${c.worst_beaten.range})`);
+          }
+        }
+        // A move whose power depends on battle state has no single number, so
+        // print the whole sequence with how likely each step is. The headline
+        // above is always the guaranteed step.
+        if (e.ladder) {
+          lines.push(`            base power scales with ${e.ladder.axis}:`);
+          for (const step of e.ladder.steps) {
+            const ko = step.ohko ? '  OHKO' : '';
+            lines.push(`              ${step.note} (${step.bp} BP): ${step.damage_range}${ko}   [likelihood ${step.weight}]`);
+          }
+        }
+        // Multi-hit: the headline is one figure, but the move rolls a hit count
+        // every time. Print the distribution rather than a single number that
+        // happens to be true on average and never on any given turn.
+        if (e.multi_hit) {
+          const mh = e.multi_hit;
+          lines.push(`            ${mh.note} — headline above is the EXPECTED ${mh.expected_hits} hits`);
+          lines.push(`            guaranteed floor (${mh.guaranteed_min_percent}-${mh.guaranteed_max_percent}%) is what a move swap is judged on`);
+          for (const row of mh.hit_counts || []) {
+            const ko = row.ohko ? '  OHKO' : '';
+            lines.push(`              ${row.hits} hit${row.hits === 1 ? '' : 's'} (${(row.probability * 100).toFixed(1)}%): ${row.min_percent}-${row.max_percent}%${ko}`);
+          }
+        }
+        if (e.bp_unresolved) {
+          lines.push('            WARNING: this move\'s real base power depends on state not modelled here');
+          lines.push(`            (multi-hit or turn state) — the number above assumes ${e.base_power_used} BP and is not reliable`);
         }
       }
     }
@@ -1254,9 +1330,73 @@ function buildTeamBuildText(responseBody, team) {
       if (sw.pokemon.length > 0) {
         lines.push('    Pokemon:');
         for (const x of sw.pokemon) {
-          lines.push(`      - drop ${x.drop}, bring ${x.add} (${x.add_types.join('/')}, ${(x.add_usage * 100).toFixed(1)}% usage${x.add_item ? `, ${x.add_item}` : ''})`);
+          const role = x.add_role?.role ? `, ${x.add_role.role}` : '';
+          lines.push(`      - drop ${x.drop}${x.drop_role?.role ? ` (${x.drop_role.role})` : ''}, bring ${x.add} (${x.add_types.join('/')}${role}, ${(x.add_usage * 100).toFixed(1)}% usage)`);
+
+          // The set the numbers below were actually computed on. Without this
+          // the comparison is unfalsifiable.
+          const b = x.add_build;
+          if (b) {
+            lines.push(`          set: ${b.spread_label || '(spread unknown)'} @ ${b.item || 'no item'}${b.ability ? ` (${b.ability})` : ''}  [${b.spread_source || 'source unknown'}]`);
+            if ((b.moves || []).length > 0) {
+              lines.push(`          moves: ${b.moves.map((mv) => mv.move).join(' / ')}${b.moves_truncated ? ' (+ more)' : ''}`);
+            }
+          }
           lines.push(`          ${x.reason}`);
+
+          const d = x.delta;
+          if (d) {
+            for (const gain of d.gains_ohko_on || []) {
+              lines.push(`          GAINS a KO on ${gain.threat} (${(gain.usage * 100).toFixed(1)}%): ${gain.move} ${gain.damage_range}${gain.dropped_best_move ? ` — ${x.drop}'s best was ${gain.dropped_best_move} at ${gain.dropped_best_min}%` : ''}`);
+            }
+            for (const loss of d.loses_ohko_on || []) {
+              lines.push(`          GIVES UP the KO on ${loss.threat} (${(loss.usage * 100).toFixed(1)}%): ${x.drop}'s ${loss.move} ${loss.damage_range}${loss.candidate_best_move ? ` — ${x.add}'s best is ${loss.candidate_best_move} at ${loss.candidate_best_min}%` : ''}`);
+            }
+            for (const s of d.newly_survives || []) {
+              lines.push(`          NEWLY SURVIVES ${s.threat}'s ${s.move}: ${s.candidate_range} on ${x.add} vs ${s.dropped_range} on ${x.drop}`);
+            }
+            for (const v of d.newly_vulnerable || []) {
+              lines.push(`          NEWLY DIES to ${v.threat}'s ${v.move}: ${v.candidate_range} on ${x.add} vs ${v.dropped_range} on ${x.drop}`);
+            }
+            const tr = d.truncated || {};
+            if (tr.gains_ohko_on || tr.loses_ohko_on || tr.newly_survives || tr.newly_vulnerable) {
+              lines.push(`          (lists capped — totals: +${d.totals.gains_ohko_on} KOs / -${d.totals.loses_ohko_on} KOs / +${d.totals.newly_survives} survived / -${d.totals.newly_vulnerable} newly lost)`);
+            }
+            if (d.calc_failures > 0) lines.push(`          (${d.calc_failures} calcs in this comparison failed to resolve)`);
+          }
+
+          // Screens and Intimidate are the whole argument for some swaps, so
+          // they are recomputed rather than asserted.
+          const fe = x.field_effects;
+          if (fe && (fe.new_effects || []).length > 0) {
+            lines.push(`          BRINGS ${fe.new_effects.join(', ')}:`);
+            for (const rc of fe.recomputes || []) {
+              const broken = rc.before_ohko && !rc.after_ohko ? '  (no longer an OHKO)' : '';
+              lines.push(`            ${rc.effect} vs ${rc.attacker}'s ${rc.move} on ${rc.defender}: ${rc.before_range} -> ${rc.after_range}${broken}`);
+            }
+            if (fe.recomputes_truncated) lines.push(`            (${fe.recomputes_total} recomputes total, list capped)`);
+            for (const cv of fe.caveats || []) lines.push(`            note: ${cv}`);
+          }
+
           if ((x.loses || []).length > 0) lines.push(`          dropping ${x.drop} costs: ${x.loses.join('; ')}`);
+
+          // What the drop costs that nothing left on the team replaces, and
+          // whether anything in the whole legal pool covers it.
+          const bf = x.backfill;
+          if (bf && !bf.nothing_lost) {
+            for (const loss of bf.losses || []) {
+              lines.push(`          IRREPLACEABLE: ${loss.detail || loss.what}`);
+              lines.push(`            ${loss.statement}`);
+              for (const rep of loss.replacements || []) {
+                const dmg = rep.damage_range ? `: ${rep.move} ${rep.damage_range}` : ` — ${rep.move}`;
+                lines.push(`              ${rep.pokemon} (${(rep.usage * 100).toFixed(1)}% usage)${dmg}`);
+              }
+            }
+            if (bf.losses_truncated) lines.push(`            (${bf.losses_total} irreplaceable losses total, list capped)`);
+          }
+          if (x.candidates_real_evaluated) {
+            lines.push(`          (chosen from ${x.candidates_real_evaluated} candidates real-calced against this archetype)`);
+          }
         }
       }
       // Members the matchup maths wanted to cut but that hold irreplaceable team
@@ -1266,7 +1406,13 @@ function buildTeamBuildText(responseBody, team) {
         for (const p2 of sw.pokemon_protected) lines.push(`      - ${p2}`);
       }
       if (sw.bounds) {
-        lines.push(`    (bounds: max ${sw.bounds.max_move_swaps} move / ${sw.bounds.max_item_swaps} item / ${sw.bounds.max_pokemon_swaps} Pokemon swaps; ${sw.bounds.item_candidates_per_member} item candidates per member; ${sw.bounds.pokemon_pool_considered} legal Pokemon considered)`);
+        // "legal Pokemon considered" used to print a hard-coded 40 and read as a
+        // fact about the format. It is the size of the pool we searched, and it
+        // now says which part of that pool produced a usable candidate.
+        const misses = sw.bounds.pokemon_pool_profile_misses
+          ? `, ${sw.bounds.pokemon_pool_profile_misses} skipped for missing species data`
+          : '';
+        lines.push(`    (bounds: max ${sw.bounds.max_move_swaps} move / ${sw.bounds.max_item_swaps} item / ${sw.bounds.max_pokemon_swaps} Pokemon swaps; ${sw.bounds.item_candidates_per_member} item candidates per member; searched all ${sw.bounds.pokemon_pool_considered} legal Pokemon, ${sw.bounds.pokemon_pool_scored} scored as viable${misses})`);
       }
     }
 
