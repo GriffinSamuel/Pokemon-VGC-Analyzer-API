@@ -38,6 +38,17 @@ function splitSections(text) {
 const app = require('./src/app');
 const pool = require('./src/db/pool');
 
+// Node's global fetch (undici) defaults to a 300s headersTimeout/bodyTimeout.
+// This script's fetch is a loopback call to the server it just booted in the
+// same process — the archetype build routinely takes longer than 5 minutes
+// with the full 256-Pokemon swap pool, so the default silently aborts the
+// client side while the server keeps working, then the server's now-orphaned
+// request blows up when it touches the pool this script's finally block just
+// ended. Disable the timeout for this in-process call; there is no real
+// network on the other end to hang against.
+const { Agent, setGlobalDispatcher } = require('undici');
+setGlobalDispatcher(new Agent({ headersTimeout: 0, bodyTimeout: 0 }));
+
 const DEFAULT_TEAM = ['Charizard-Mega-Y', 'Venusaur', 'Whimsicott', 'Kingambit', 'Archaludon', 'Pelipper'];
 
 (async () => {
