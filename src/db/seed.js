@@ -1,5 +1,6 @@
 const { Dex } = require('@pkmn/dex');
 const pool = require('./pool');
+const { seedLearnsets } = require('./seed_learnsets');
 
 async function seed() {
   const client = await pool.connect();
@@ -66,28 +67,13 @@ async function seed() {
     }
 
     console.log('Seeding learnsets (this may take a minute)...');
-    for (const species of Dex.species.all()) {
-      if (!species.exists || species.isNonstandard) continue;
-
-      const learnset = await Dex.learnsets.get(species.name);
-      if (!learnset?.learnset) continue;
-
-      const pkmnRow = await client.query(
-        'SELECT id FROM pokemon WHERE name = $1', [species.name]
-      );
-      if (!pkmnRow.rows.length) continue;
-      const pokemonId = pkmnRow.rows[0].id;
-
-      for (const moveName of Object.keys(learnset.learnset)) {
-        const moveRow = await client.query(
-          'SELECT id FROM moves WHERE LOWER(name) = LOWER($1)', [moveName]
-        );
-        if (!moveRow.rows.length) continue;
-        await client.query(
-          `INSERT INTO pokemon_moves (pokemon_id, move_id)
-           VALUES ($1, $2) ON CONFLICT DO NOTHING`,
-          [pokemonId, moveRow.rows[0].id]
-        );
+    const { inserted, dropped } = await seedLearnsets(client);
+    console.log(`  ${inserted} pokemon_moves rows inserted/confirmed`);
+    if (dropped.size > 0) {
+      const total = [...dropped.values()].reduce((a, b) => a + b, 0);
+      console.log(`  ${total} learnset keys had no matching moves row, across ${dropped.size} distinct dex move ids (never silently truncate):`);
+      for (const [id, c] of [...dropped.entries()].sort((a, b) => b[1] - a[1])) {
+        console.log(`    ${id.padEnd(24)} x${c}`);
       }
     }
 

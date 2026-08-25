@@ -39,6 +39,7 @@ const { getOrComputeEvolutionarySpread } = require('./ev_optimizer');
 // this section is supposed to stop producing.
 const { CalcDamage, getMoveData, buildStatsFromSP } = require('./nerd_of_now_calc');
 const { calcStat, natureMultiplierFor } = require('./stat_formula');
+const { baseSpeciesFallback } = require('./species_base_form');
 const { getAbilityFrequency } = require('./speed_context');
 const { round } = require('./format');
 
@@ -223,8 +224,9 @@ async function knowsMove(speciesName, moveName) {
     return rows.length > 0;
   };
   let found = await tryFetch(lower(speciesName));
-  if (!found && lower(speciesName).includes('-mega')) {
-    found = await tryFetch(lower(speciesName).replace(/-mega(-[xy])?$/, ''));
+  if (!found) {
+    const base = baseSpeciesFallback(speciesName);
+    if (base) found = await tryFetch(lower(base));
   }
   knowsMoveCache.set(key, found);
   return found;
@@ -245,9 +247,12 @@ async function getLearnset(speciesName) {
     return rows;
   };
   let rows = await tryFetch(key);
-  // Mega forms have no `pokemon` row (documented gap); a Mega's movepool is its
-  // base form's.
-  if (rows.length === 0 && key.includes('-mega')) rows = await tryFetch(key.replace(/-mega(-[xy])?$/, ''));
+  // Battle-only/alias forms (Megas, and others) have no `pokemon` row of
+  // their own (documented gap); their movepool is their base species'.
+  if (rows.length === 0) {
+    const base = baseSpeciesFallback(speciesName);
+    if (base) rows = await tryFetch(lower(base));
+  }
   learnsetCache.set(key, rows);
   return rows;
 }
