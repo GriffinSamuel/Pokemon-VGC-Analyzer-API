@@ -130,6 +130,7 @@ const investmentCache = new Map();
 const candidateBuildCache = new Map();
 const threatSpeedCache = new Map();
 const knowsMoveCache = new Map();
+const moveKnownAnywhereCache = new Map();
 
 async function getMoveRow(moveName) {
   const key = lower(moveName);
@@ -207,7 +208,39 @@ async function observedAbilityFor(name, row) {
   return ability;
 }
 
-/** Does this species have this move in its learnset at all (status moves included)? */
+/**
+ * Does ANY species have a pokemon_moves row for this move at all? Memoised
+ * per move — one extra query, not one per species checked.
+ *
+ * This is what makes a missing row for one species meaningful. If the table
+ * has never heard of the move (rebuilt from @pkmn/dex but still short 24
+ * moves — see check_learnset_coverage.js), a missing row is a data gap, not
+ * a legality answer, and must not be reported as one.
+ */
+async function moveKnownAnywhere(moveName) {
+  const key = lower(moveName);
+  if (moveKnownAnywhereCache.has(key)) return moveKnownAnywhereCache.get(key);
+  const { rows } = await pool.query(
+    `SELECT 1 FROM moves m JOIN pokemon_moves pm ON pm.move_id = m.id
+      WHERE LOWER(m.name) = $1 LIMIT 1`,
+    [key]
+  ).catch(() => ({ rows: [] }));
+  const known = rows.length > 0;
+  moveKnownAnywhereCache.set(key, known);
+  return known;
+}
+
+/**
+ * Three-state legality, not a boolean:
+ *   'legal'   — this species has a pokemon_moves row for this move.
+ *   'illegal' — the move has rows for OTHER species but not this one. The
+ *               table demonstrably knows this move and still excludes this
+ *               species — a real denial.
+ *   'unknown' — the move has zero pokemon_moves rows anywhere. We have no
+ *               data. Callers must not treat this as a denial; it is exactly
+ *               the false-negative that made the screens gate assert a
+ *               Pokemon "cannot learn" a move it was observed running.
+ */
 async function knowsMove(speciesName, moveName) {
   const key = `${lower(speciesName)}|${lower(moveName)}`;
   if (knowsMoveCache.has(key)) return knowsMoveCache.get(key);
@@ -228,8 +261,9 @@ async function knowsMove(speciesName, moveName) {
     const base = baseSpeciesFallback(speciesName);
     if (base) found = await tryFetch(lower(base));
   }
-  knowsMoveCache.set(key, found);
-  return found;
+  const verdict = found ? 'legal' : ((await moveKnownAnywhere(moveName)) ? 'illegal' : 'unknown');
+  knowsMoveCache.set(key, verdict);
+  return verdict;
 }
 
 async function getLearnset(speciesName) {
@@ -1210,11 +1244,18 @@ async function fieldEffectAnalysis(candidate, droppedName, team, defenders, thre
     const effect = SCREEN_MOVES[lower(mv.move)];
     if (!effect) continue;
     const learnsIt = await knowsMove(candidate.name, effect);
+    // 'unknown' means the table has no data for this move at all — not that
+    // the candidate can't learn it. mv is drawn from candidate.set_moves, so
+    // the candidate is ALREADY observed running this exact move; that
+    // observation outweighs a table gap. Only a real 'illegal' verdict (the
+    // table demonstrably has data for this move and still excludes this
+    // species) blocks the candidate as a setter.
+    const candidateSets = learnsIt !== 'illegal';
     const oursSetting = remaining.filter((m) => memberRunsMove(m, effect)).map((m) => `${m.pokemon} (our side)`);
     const theirsSetting = threats
       .filter((t) => (t.top_moves || []).some((x) => lower(x) === lower(effect)))
       .map((t) => `${t.pokemon} (their side)`);
-    const setters = [...(learnsIt ? [`${candidate.name} (incoming)`] : []), ...oursSetting, ...theirsSetting];
+    const setters = [...(candidateSets ? [`${candidate.name} (incoming)`] : []), ...oursSetting, ...theirsSetting];
     if (setters.length === 0) {
       skipped.push(`${effect} — observed on ${candidate.name} in tournament data but absent from its learnset, and no Pokemon on either team can set it; not reported`);
       continue;
@@ -1506,8 +1547,10 @@ async function searchPoolForCoverage(loss, poolNames, defenders, weather, exclud
     const mv = (profile.moves || []).find((m) => (m.power || 0) > 0 && m.type === loss.what);
     if (!mv) continue;
     // Learnset-confirmed as well as observed, so a scrape artefact cannot invent
-    // a coverage source that does not exist.
-    if (!(await knowsMove(profile.name, mv.move))) continue;
+    // a coverage source that does not exist — but a table gap ('unknown') is
+    // not evidence of that; only a real 'illegal' verdict vetoes a candidate
+    // that already cleared the observed-frequency and damage-threshold checks.
+    if ((await knowsMove(profile.name, mv.move)) === 'illegal') continue;
     const sp = profile.spread?.sp || null;
     const side = {
       nature: profile.spread?.nature || 'Hardy', item: profile.item || '', ability: profile.ability || '',
