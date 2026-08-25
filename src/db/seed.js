@@ -1,6 +1,7 @@
 const { Dex } = require('@pkmn/dex');
 const pool = require('./pool');
 const { seedLearnsets } = require('./seed_learnsets');
+const { insertMoveRow } = require('./seed_moves');
 
 async function seed() {
   const client = await pool.connect();
@@ -20,24 +21,7 @@ async function seed() {
     console.log('Seeding moves...');
     for (const move of Dex.moves.all()) {
       if (!move.exists || move.isNonstandard) continue;
-      await client.query(
-        `INSERT INTO moves (name, type, category, power, accuracy, pp, priority, flags)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ON CONFLICT (name) DO NOTHING`,
-        [
-          move.name,
-          move.type,
-          move.category,
-          move.basePower || null,
-          move.accuracy === true ? 100 : move.accuracy || null,
-          move.pp,
-          move.priority || 0,
-          JSON.stringify({
-            contact: !!move.flags?.contact,
-            recoil: move.recoil || null,
-            drain: move.drain || null,
-          })
-        ]
-      );
+      await insertMoveRow(client, move);
     }
 
     console.log('Seeding pokemon...');

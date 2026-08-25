@@ -258,7 +258,12 @@ async function knowsMove(speciesName, moveName) {
   };
   let found = await tryFetch(lower(speciesName));
   if (!found) {
-    const base = baseSpeciesFallback(speciesName);
+    // A mismatch (the dex silently resolved to a different species than the
+    // one asked about — see species_base_form.js) gets no fallback at all,
+    // not a wrong one. That correctly leaves `found` false, which in turn
+    // falls through to 'unknown' below rather than a false 'illegal' — the
+    // three-state split is exactly what keeps this case honest.
+    const { base } = baseSpeciesFallback(speciesName);
     if (base) found = await tryFetch(lower(base));
   }
   const verdict = found ? 'legal' : ((await moveKnownAnywhere(moveName)) ? 'illegal' : 'unknown');
@@ -282,9 +287,11 @@ async function getLearnset(speciesName) {
   };
   let rows = await tryFetch(key);
   // Battle-only/alias forms (Megas, and others) have no `pokemon` row of
-  // their own (documented gap); their movepool is their base species'.
+  // their own (documented gap); their movepool is their base species' —
+  // but only when the dex actually resolved THIS species, not a different
+  // one it silently substituted (mismatch; see species_base_form.js).
   if (rows.length === 0) {
-    const base = baseSpeciesFallback(speciesName);
+    const { base } = baseSpeciesFallback(speciesName);
     if (base) rows = await tryFetch(lower(base));
   }
   learnsetCache.set(key, rows);

@@ -46,7 +46,11 @@ async function seedLearnsets(client) {
 
     let learnset = await Dex.learnsets.get(species.name);
     if (!learnset?.learnset) {
-      const base = baseSpeciesFallback(species.name);
+      // species.name is drawn straight from Dex.species.all(), so this is
+      // always a genuine dex identity — no mismatch is possible here, unlike
+      // the archetype_swaps.js callers which look up this project's own
+      // (sometimes invented) species names.
+      const { base } = baseSpeciesFallback(species.name);
       if (base) learnset = await Dex.learnsets.get(base);
     }
     if (!learnset?.learnset) continue;
