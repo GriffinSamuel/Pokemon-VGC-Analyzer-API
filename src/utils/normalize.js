@@ -146,11 +146,34 @@ function normalizePokemonName(id, item) {
     .join('-');
 }
 
+/**
+ * A move name as scraped, corrected to its canonical display form. Same
+ * ID-vs-display confusion as the toID/LOWER() bug that hollowed out
+ * pokemon_moves, different place: one Limitless tournament's decklist data
+ * arrived with `attacks` as dex move IDs ("trickroom") instead of display
+ * names ("Trick Room") — Limitless's structured API is passed straight
+ * through with no move-name processing at all, unlike species names, which
+ * normalizePokemonName already corrects.
+ *
+ * Dex.moves.get() normalises its input via toID() before lookup, so this is
+ * a no-op for an already-correct display name and a real fix for an ID-style
+ * string. A genuine typo ("Solat Beam") the dex doesn't recognise either is
+ * returned unchanged — there is no safe way to guess what it meant, so it is
+ * left for a human to see and fix, not silently "corrected" into something
+ * that might be wrong.
+ */
+function normalizeMoveName(name) {
+  if (!name) return name;
+  const move = Dex.moves.get(name);
+  return move?.exists ? move.name : name;
+}
+
 function normalizeTeam(pokemonArray) {
   if (!Array.isArray(pokemonArray)) return [];
   return pokemonArray.map(p => ({
     ...p,
     normalizedName: normalizePokemonName(p.id || p.name, p.item),
+    attacks: Array.isArray(p.attacks) ? p.attacks.map(normalizeMoveName) : p.attacks,
   }));
 }
 
@@ -194,4 +217,4 @@ async function auditMegaItemMappings() {
   }
 }
 
-module.exports = { normalizePokemonName, normalizeTeam, auditMegaItemMappings, MEGA_ITEM_MAP };
+module.exports = { normalizePokemonName, normalizeMoveName, normalizeTeam, auditMegaItemMappings, MEGA_ITEM_MAP };

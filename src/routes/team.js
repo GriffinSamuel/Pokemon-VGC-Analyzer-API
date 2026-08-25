@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const pool = require('../db/pool');
 const logger = require('../utils/logger');
-const { normalizePokemonName } = require('../utils/normalize');
+const { normalizePokemonName, normalizeMoveName } = require('../utils/normalize');
 const { effectivenessAgainst } = require('../utils/typeChart');
 const { classifyRole } = require('../utils/role_classifier');
 const { buildRecoilText, RECOIL_MOVES } = require('../utils/spread_scorer');
@@ -80,6 +80,24 @@ function parsePokemonBlock(block) {
   let namePart = atIndex === -1 ? firstLine : firstLine.slice(0, atIndex).trim();
   const item = atIndex === -1 ? null : firstLine.slice(atIndex + 3).trim();
 
+  // A trailing "(M)" or "(F)" is a gender marker, not a nickname's species —
+  // Showdown writes it as its own parenthetical AFTER any "Nickname (Species)"
+  // pair ("Sharky (Garchomp) (M)"), or alone if there's no nickname
+  // ("Basculegion (M)"). It is always exactly one of those two letters, which
+  // is what makes it unambiguous from a real species name. Strip it BEFORE
+  // the nickname check below: without this, "Basculegion (M)" read as
+  // "Nickname (Species)" extracts species "M" — not a real Pokemon — and
+  // "Sharky (Garchomp) (M)" extracts species "Garchomp) (M", a mangled
+  // string with a stray paren welded on. Both shapes were observed for real
+  // in tournament_teams (the "m"/"f" species buckets, and "Dragalge-Mega)
+  // (F" as a raw name) before this fix.
+  let gender = null;
+  const genderMatch = namePart.match(/^(.+?)\s*\(([MF])\)$/);
+  if (genderMatch) {
+    namePart = genderMatch[1].trim();
+    gender = genderMatch[2];
+  }
+
   // Showdown supports "Nickname (Species)" — the parenthesized form is the real species.
   const nicknameMatch = namePart.match(/^(.+?)\s*\((.+?)\)$/);
   const species = nicknameMatch ? nicknameMatch[2].trim() : namePart;
@@ -88,6 +106,7 @@ function parsePokemonBlock(block) {
   const mon = {
     name: species,
     item,
+    gender,
     ability: null,
     tera: null,
     level: 50,
@@ -111,7 +130,7 @@ function parsePokemonBlock(block) {
       mon.nature = line.replace(/\bnature$/i, '').trim();
     } else if (/^[-~]/.test(line)) {
       const move = line.replace(/^[-~]\s*/, '').trim();
-      if (move) mon.attacks.push(move);
+      if (move) mon.attacks.push(normalizeMoveName(move));
     }
   }
 
