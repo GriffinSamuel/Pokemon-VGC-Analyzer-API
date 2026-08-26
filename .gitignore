@@ -18,4 +18,5 @@ diagnose_sp.js
 show_why.js
 
 .claude/scheduled_tasks.lock
+.claude/settings.local.json
 HANDOFF_*.md
