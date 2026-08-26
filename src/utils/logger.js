@@ -17,7 +17,7 @@ function writeToFile(file, message) {
 const logger = {
   info(message, meta = {}) {
     const line = JSON.stringify({ level: 'info', timestamp: timestamp(), message, ...meta });
-    console.log(line);
+    console.error(line);
     writeToFile(logFile, line);
   },
   error(message, meta = {}) {
