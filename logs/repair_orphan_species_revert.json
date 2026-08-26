@@ -1,0 +1,2522 @@
+[
+  {
+    "teamId": 5801,
+    "idx": 0,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Vivillon",
+    "resolvedAt": "2026-08-26T05:03:02.166Z"
+  },
+  {
+    "teamId": 5801,
+    "idx": 1,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Farigiraf",
+    "resolvedAt": "2026-08-26T05:03:02.166Z"
+  },
+  {
+    "teamId": 5801,
+    "idx": 3,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Kingambit",
+    "resolvedAt": "2026-08-26T05:03:02.166Z"
+  },
+  {
+    "teamId": 5801,
+    "idx": 4,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Sylveon",
+    "resolvedAt": "2026-08-26T05:03:02.166Z"
+  },
+  {
+    "teamId": 5801,
+    "idx": 5,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Sneasler",
+    "resolvedAt": "2026-08-26T05:03:02.166Z"
+  },
+  {
+    "teamId": 5799,
+    "idx": 0,
+    "originalName": "F",
+    "originalNormalizedName": "F",
+    "resolvedSpecies": "Slowking-Galar",
+    "resolvedAt": "2026-08-26T05:03:02.166Z"
+  },
+  {
+    "teamId": 5799,
+    "idx": 3,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Farigiraf",
+    "resolvedAt": "2026-08-26T05:03:02.166Z"
+  },
+  {
+    "teamId": 5799,
+    "idx": 5,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Incineroar",
+    "resolvedAt": "2026-08-26T05:03:02.166Z"
+  },
+  {
+    "teamId": 5819,
+    "idx": 4,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.166Z"
+  },
+  {
+    "teamId": 5824,
+    "idx": 2,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.166Z"
+  },
+  {
+    "teamId": 5825,
+    "idx": 4,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.166Z"
+  },
+  {
+    "teamId": 5823,
+    "idx": 1,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.166Z"
+  },
+  {
+    "teamId": 5827,
+    "idx": 0,
+    "originalName": "F",
+    "originalNormalizedName": "F",
+    "resolvedSpecies": "Vivillon",
+    "resolvedAt": "2026-08-26T05:03:02.166Z"
+  },
+  {
+    "teamId": 5827,
+    "idx": 3,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Garchomp",
+    "resolvedAt": "2026-08-26T05:03:02.166Z"
+  },
+  {
+    "teamId": 5827,
+    "idx": 4,
+    "originalName": "F",
+    "originalNormalizedName": "F",
+    "resolvedSpecies": "Whimsicott",
+    "resolvedAt": "2026-08-26T05:03:02.166Z"
+  },
+  {
+    "teamId": 5829,
+    "idx": 1,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Venusaur",
+    "resolvedAt": "2026-08-26T05:03:02.166Z"
+  },
+  {
+    "teamId": 5829,
+    "idx": 3,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Archaludon",
+    "resolvedAt": "2026-08-26T05:03:02.166Z"
+  },
+  {
+    "teamId": 5829,
+    "idx": 4,
+    "originalName": "F",
+    "originalNormalizedName": "F",
+    "resolvedSpecies": "Pelipper",
+    "resolvedAt": "2026-08-26T05:03:02.166Z"
+  },
+  {
+    "teamId": 5829,
+    "idx": 5,
+    "originalName": "F",
+    "originalNormalizedName": "F",
+    "resolvedSpecies": "Farigiraf",
+    "resolvedAt": "2026-08-26T05:03:02.166Z"
+  },
+  {
+    "teamId": 5834,
+    "idx": 1,
+    "originalName": "F",
+    "originalNormalizedName": "F",
+    "resolvedSpecies": "Dragonite",
+    "resolvedAt": "2026-08-26T05:03:02.166Z"
+  },
+  {
+    "teamId": 5834,
+    "idx": 2,
+    "originalName": "F",
+    "originalNormalizedName": "F",
+    "resolvedSpecies": "Sneasler",
+    "resolvedAt": "2026-08-26T05:03:02.166Z"
+  },
+  {
+    "teamId": 5834,
+    "idx": 5,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Incineroar",
+    "resolvedAt": "2026-08-26T05:03:02.166Z"
+  },
+  {
+    "teamId": 5838,
+    "idx": 1,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Malamar",
+    "resolvedAt": "2026-08-26T05:03:02.166Z"
+  },
+  {
+    "teamId": 5838,
+    "idx": 3,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Kommo-o",
+    "resolvedAt": "2026-08-26T05:03:02.166Z"
+  },
+  {
+    "teamId": 5838,
+    "idx": 5,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.166Z"
+  },
+  {
+    "teamId": 5840,
+    "idx": 2,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Grimmsnarl",
+    "resolvedAt": "2026-08-26T05:03:02.166Z"
+  },
+  {
+    "teamId": 5840,
+    "idx": 3,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.166Z"
+  },
+  {
+    "teamId": 5852,
+    "idx": 2,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Grimmsnarl",
+    "resolvedAt": "2026-08-26T05:03:02.166Z"
+  },
+  {
+    "teamId": 5852,
+    "idx": 4,
+    "originalName": "F",
+    "originalNormalizedName": "F",
+    "resolvedSpecies": "Tinkaton",
+    "resolvedAt": "2026-08-26T05:03:02.166Z"
+  },
+  {
+    "teamId": 5853,
+    "idx": 5,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Grimmsnarl",
+    "resolvedAt": "2026-08-26T05:03:02.166Z"
+  },
+  {
+    "teamId": 5854,
+    "idx": 1,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Garchomp",
+    "resolvedAt": "2026-08-26T05:03:02.166Z"
+  },
+  {
+    "teamId": 5854,
+    "idx": 2,
+    "originalName": "F",
+    "originalNormalizedName": "F",
+    "resolvedSpecies": "Houndstone",
+    "resolvedAt": "2026-08-26T05:03:02.166Z"
+  },
+  {
+    "teamId": 5854,
+    "idx": 3,
+    "originalName": "F",
+    "originalNormalizedName": "F",
+    "resolvedSpecies": "Sylveon",
+    "resolvedAt": "2026-08-26T05:03:02.166Z"
+  },
+  {
+    "teamId": 5861,
+    "idx": 0,
+    "originalName": "F",
+    "originalNormalizedName": "F",
+    "resolvedSpecies": "Farigiraf",
+    "resolvedAt": "2026-08-26T05:03:02.166Z"
+  },
+  {
+    "teamId": 5861,
+    "idx": 1,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Torkoal",
+    "resolvedAt": "2026-08-26T05:03:02.166Z"
+  },
+  {
+    "teamId": 5861,
+    "idx": 3,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Sneasler",
+    "resolvedAt": "2026-08-26T05:03:02.166Z"
+  },
+  {
+    "teamId": 5861,
+    "idx": 5,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Vivillon",
+    "resolvedAt": "2026-08-26T05:03:02.166Z"
+  },
+  {
+    "teamId": 5860,
+    "idx": 4,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.166Z"
+  },
+  {
+    "teamId": 5865,
+    "idx": 4,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.166Z"
+  },
+  {
+    "teamId": 5885,
+    "idx": 2,
+    "originalName": "F",
+    "originalNormalizedName": "F",
+    "resolvedSpecies": "Kingambit",
+    "resolvedAt": "2026-08-26T05:03:02.166Z"
+  },
+  {
+    "teamId": 5885,
+    "idx": 3,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.166Z"
+  },
+  {
+    "teamId": 5885,
+    "idx": 4,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Garchomp",
+    "resolvedAt": "2026-08-26T05:03:02.166Z"
+  },
+  {
+    "teamId": 5887,
+    "idx": 3,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.166Z"
+  },
+  {
+    "teamId": 5892,
+    "idx": 2,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.166Z"
+  },
+  {
+    "teamId": 5896,
+    "idx": 3,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.166Z"
+  },
+  {
+    "teamId": 5903,
+    "idx": 2,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Grimmsnarl",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 5902,
+    "idx": 0,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Meowstic",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 5910,
+    "idx": 5,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6245,
+    "idx": 5,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Grimmsnarl",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 5913,
+    "idx": 3,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 5912,
+    "idx": 5,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Grimmsnarl",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6224,
+    "idx": 1,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Grimmsnarl",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 5916,
+    "idx": 5,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 5915,
+    "idx": 4,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Gallade",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6239,
+    "idx": 4,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 5918,
+    "idx": 4,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 5919,
+    "idx": 5,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Gallade",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6254,
+    "idx": 0,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Grimmsnarl",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6254,
+    "idx": 2,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 5923,
+    "idx": 5,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 5928,
+    "idx": 4,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 5934,
+    "idx": 2,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 5920,
+    "idx": 5,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Meowstic",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 5945,
+    "idx": 3,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 5952,
+    "idx": 3,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 5955,
+    "idx": 3,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 5959,
+    "idx": 4,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 5798,
+    "idx": 4,
+    "originalName": "F",
+    "originalNormalizedName": "F",
+    "resolvedSpecies": "Tsareena",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 5798,
+    "idx": 5,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 5980,
+    "idx": 1,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Weavile",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 5980,
+    "idx": 3,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Incineroar",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 5980,
+    "idx": 5,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Zoroark-Hisui",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 5981,
+    "idx": 0,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Grimmsnarl",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 5981,
+    "idx": 1,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 5967,
+    "idx": 1,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 5985,
+    "idx": 5,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 5842,
+    "idx": 5,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Gallade",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 5894,
+    "idx": 3,
+    "originalName": "F",
+    "originalNormalizedName": "F",
+    "resolvedSpecies": "Tsareena",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 5987,
+    "idx": 4,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Grimmsnarl",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 5914,
+    "idx": 2,
+    "originalName": "F",
+    "originalNormalizedName": "F",
+    "resolvedSpecies": "Tsareena",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6183,
+    "idx": 2,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Grimmsnarl",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 5979,
+    "idx": 1,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Weavile",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 5979,
+    "idx": 2,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Incineroar",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 5979,
+    "idx": 4,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Zoroark-Hisui",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 5991,
+    "idx": 3,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 5993,
+    "idx": 4,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Grimmsnarl",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6040,
+    "idx": 3,
+    "originalName": "F",
+    "originalNormalizedName": "F",
+    "resolvedSpecies": "Tsareena",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6040,
+    "idx": 5,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 5996,
+    "idx": 4,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6158,
+    "idx": 1,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Grimmsnarl",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6069,
+    "idx": 1,
+    "originalName": "F",
+    "originalNormalizedName": "F",
+    "resolvedSpecies": "Tsareena",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6000,
+    "idx": 5,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Grimmsnarl",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6002,
+    "idx": 3,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6005,
+    "idx": 5,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6004,
+    "idx": 4,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Grimmsnarl",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6008,
+    "idx": 3,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 5816,
+    "idx": 1,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Meowscarada",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 5816,
+    "idx": 3,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Dragonite",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 5816,
+    "idx": 4,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Sylveon",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 5816,
+    "idx": 5,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Mudsdale",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 5965,
+    "idx": 1,
+    "originalName": "F",
+    "originalNormalizedName": "F",
+    "resolvedSpecies": "Tsareena",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6010,
+    "idx": 4,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Grimmsnarl",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 5988,
+    "idx": 3,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Grimmsnarl",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6013,
+    "idx": 1,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6170,
+    "idx": 2,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6170,
+    "idx": 5,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Grimmsnarl",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6014,
+    "idx": 2,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6014,
+    "idx": 3,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Grimmsnarl",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6017,
+    "idx": 4,
+    "originalName": "F",
+    "originalNormalizedName": "F",
+    "resolvedSpecies": "Tsareena",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6007,
+    "idx": 3,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Grimmsnarl",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6021,
+    "idx": 4,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Grimmsnarl",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6024,
+    "idx": 4,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6252,
+    "idx": 3,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6252,
+    "idx": 4,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Grimmsnarl",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6027,
+    "idx": 4,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 5917,
+    "idx": 3,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Grimmsnarl",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 5917,
+    "idx": 5,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6025,
+    "idx": 4,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 5817,
+    "idx": 2,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 5835,
+    "idx": 5,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6034,
+    "idx": 3,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 5844,
+    "idx": 2,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6035,
+    "idx": 1,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Grimmsnarl",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6036,
+    "idx": 1,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 5846,
+    "idx": 1,
+    "originalName": "F",
+    "originalNormalizedName": "F",
+    "resolvedSpecies": "Garchomp",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 5846,
+    "idx": 2,
+    "originalName": "F",
+    "originalNormalizedName": "F",
+    "resolvedSpecies": "Hydreigon",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 5846,
+    "idx": 3,
+    "originalName": "F",
+    "originalNormalizedName": "F",
+    "resolvedSpecies": "Kingambit",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 5846,
+    "idx": 4,
+    "originalName": "F",
+    "originalNormalizedName": "F",
+    "resolvedSpecies": "Sneasler",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 5846,
+    "idx": 5,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Incineroar",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 5942,
+    "idx": 1,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Grimmsnarl",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6041,
+    "idx": 2,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 5851,
+    "idx": 0,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Meowstic",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6042,
+    "idx": 3,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Grimmsnarl",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6045,
+    "idx": 4,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 5890,
+    "idx": 5,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6043,
+    "idx": 3,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6048,
+    "idx": 1,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Grimmsnarl",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 5895,
+    "idx": 2,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 5922,
+    "idx": 0,
+    "originalName": "F",
+    "originalNormalizedName": "F",
+    "resolvedSpecies": "Hatterene",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 5960,
+    "idx": 2,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 5968,
+    "idx": 3,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6056,
+    "idx": 3,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Gallade",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6056,
+    "idx": 4,
+    "originalName": "F",
+    "originalNormalizedName": "F",
+    "resolvedSpecies": "Hatterene",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 5974,
+    "idx": 0,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 5974,
+    "idx": 1,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Grimmsnarl",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 5977,
+    "idx": 1,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6059,
+    "idx": 3,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 5804,
+    "idx": 0,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Annihilape",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 5804,
+    "idx": 1,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Whimsicott",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 5804,
+    "idx": 3,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 5804,
+    "idx": 5,
+    "originalName": "F",
+    "originalNormalizedName": "F",
+    "resolvedSpecies": "Garchomp",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 5802,
+    "idx": 0,
+    "originalName": "F",
+    "originalNormalizedName": "F",
+    "resolvedSpecies": "Whimsicott",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 5802,
+    "idx": 2,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Garchomp",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 5802,
+    "idx": 3,
+    "originalName": "F",
+    "originalNormalizedName": "F",
+    "resolvedSpecies": "Kingambit",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 5802,
+    "idx": 5,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Lycanroc-Dusk",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6065,
+    "idx": 1,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 5889,
+    "idx": 2,
+    "originalName": "F",
+    "originalNormalizedName": "F",
+    "resolvedSpecies": "Milotic",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6023,
+    "idx": 0,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6063,
+    "idx": 2,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Grimmsnarl",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6125,
+    "idx": 0,
+    "originalName": "F",
+    "originalNormalizedName": "F",
+    "resolvedSpecies": "Pelipper",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6125,
+    "idx": 1,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Grimmsnarl",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6125,
+    "idx": 5,
+    "originalName": "F",
+    "originalNormalizedName": "F",
+    "resolvedSpecies": "Garchomp",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6050,
+    "idx": 5,
+    "originalName": "F",
+    "originalNormalizedName": "F",
+    "resolvedSpecies": "Hatterene",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6068,
+    "idx": 5,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6218,
+    "idx": 2,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Grimmsnarl",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6218,
+    "idx": 4,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6070,
+    "idx": 4,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6074,
+    "idx": 2,
+    "originalName": "F",
+    "originalNormalizedName": "F",
+    "resolvedSpecies": "Tsareena",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6074,
+    "idx": 4,
+    "originalName": "F",
+    "originalNormalizedName": "F",
+    "resolvedSpecies": "Tinkaton",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6075,
+    "idx": 2,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6077,
+    "idx": 4,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 5841,
+    "idx": 5,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 5901,
+    "idx": 1,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Grimmsnarl",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6079,
+    "idx": 4,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 5911,
+    "idx": 3,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Grimmsnarl",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6083,
+    "idx": 5,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Grimmsnarl",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 5964,
+    "idx": 5,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6081,
+    "idx": 4,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Grimmsnarl",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6081,
+    "idx": 5,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6162,
+    "idx": 1,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6220,
+    "idx": 3,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 5843,
+    "idx": 3,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Mimikyu",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 5843,
+    "idx": 4,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Farigiraf",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 5843,
+    "idx": 5,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6099,
+    "idx": 5,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6136,
+    "idx": 0,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Grimmsnarl",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6066,
+    "idx": 1,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Grimmsnarl",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6031,
+    "idx": 0,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Grimmsnarl",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6143,
+    "idx": 0,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6215,
+    "idx": 2,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6104,
+    "idx": 0,
+    "originalName": "F",
+    "originalNormalizedName": "F",
+    "resolvedSpecies": "Whimsicott",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6104,
+    "idx": 5,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6103,
+    "idx": 0,
+    "originalName": "F",
+    "originalNormalizedName": "F",
+    "resolvedSpecies": "Whimsicott",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6103,
+    "idx": 3,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Garchomp",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6103,
+    "idx": 4,
+    "originalName": "F",
+    "originalNormalizedName": "F",
+    "resolvedSpecies": "Kingambit",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6103,
+    "idx": 5,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6107,
+    "idx": 2,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6108,
+    "idx": 5,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6106,
+    "idx": 5,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6111,
+    "idx": 5,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6098,
+    "idx": 1,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Whimsicott",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6098,
+    "idx": 2,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Ninetales",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6098,
+    "idx": 3,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Farigiraf",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6098,
+    "idx": 4,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6109,
+    "idx": 3,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Grimmsnarl",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6114,
+    "idx": 4,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 5809,
+    "idx": 4,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6115,
+    "idx": 3,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Grimmsnarl",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 5814,
+    "idx": 0,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6118,
+    "idx": 2,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 5989,
+    "idx": 1,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6123,
+    "idx": 2,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Grimmsnarl",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6122,
+    "idx": 5,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6018,
+    "idx": 3,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Grimmsnarl",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6235,
+    "idx": 3,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6128,
+    "idx": 3,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6127,
+    "idx": 5,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Grimmsnarl",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6129,
+    "idx": 5,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6135,
+    "idx": 3,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6141,
+    "idx": 3,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Grimmsnarl",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6140,
+    "idx": 3,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6144,
+    "idx": 1,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Grimmsnarl",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6146,
+    "idx": 4,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6151,
+    "idx": 3,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Grimmsnarl",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6155,
+    "idx": 2,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6160,
+    "idx": 4,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6166,
+    "idx": 4,
+    "originalName": "F",
+    "originalNormalizedName": "F",
+    "resolvedSpecies": "Basculegion-F",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6165,
+    "idx": 5,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6164,
+    "idx": 5,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6172,
+    "idx": 3,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Grimmsnarl",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6171,
+    "idx": 4,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6173,
+    "idx": 1,
+    "originalName": "F",
+    "originalNormalizedName": "F",
+    "resolvedSpecies": "Basculegion-F",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6176,
+    "idx": 4,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6178,
+    "idx": 4,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6180,
+    "idx": 2,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6180,
+    "idx": 5,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Grimmsnarl",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6184,
+    "idx": 1,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6184,
+    "idx": 4,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Grimmsnarl",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6185,
+    "idx": 2,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6187,
+    "idx": 1,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Grimmsnarl",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6187,
+    "idx": 3,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6192,
+    "idx": 5,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Grimmsnarl",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6196,
+    "idx": 5,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6198,
+    "idx": 2,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6198,
+    "idx": 4,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Grimmsnarl",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6200,
+    "idx": 1,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6199,
+    "idx": 3,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Grimmsnarl",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6202,
+    "idx": 2,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6206,
+    "idx": 1,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Incineroar",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6206,
+    "idx": 2,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Ninetales-Alola",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6206,
+    "idx": 3,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6206,
+    "idx": 4,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Sneasler",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6206,
+    "idx": 5,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Dragonite",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6204,
+    "idx": 2,
+    "originalName": "F",
+    "originalNormalizedName": "F",
+    "resolvedSpecies": "Sableye",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6204,
+    "idx": 3,
+    "originalName": "F",
+    "originalNormalizedName": "F",
+    "resolvedSpecies": "Pelipper",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6204,
+    "idx": 4,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6204,
+    "idx": 5,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Archaludon",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6205,
+    "idx": 1,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Torkoal",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6205,
+    "idx": 3,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Garchomp",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6205,
+    "idx": 5,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6208,
+    "idx": 4,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Grimmsnarl",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6211,
+    "idx": 2,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6209,
+    "idx": 2,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6214,
+    "idx": 0,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Grimmsnarl",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6213,
+    "idx": 3,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6216,
+    "idx": 2,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6219,
+    "idx": 4,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Grimmsnarl",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6222,
+    "idx": 0,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Grimmsnarl",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6221,
+    "idx": 3,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6227,
+    "idx": 5,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6230,
+    "idx": 4,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6231,
+    "idx": 5,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Grimmsnarl",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6233,
+    "idx": 2,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6233,
+    "idx": 3,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Grimmsnarl",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6232,
+    "idx": 4,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6243,
+    "idx": 4,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6242,
+    "idx": 3,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Grimmsnarl",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6241,
+    "idx": 2,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6244,
+    "idx": 2,
+    "originalName": "F",
+    "originalNormalizedName": "F",
+    "resolvedSpecies": "Basculegion-F",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6246,
+    "idx": 1,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Grimmsnarl",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6247,
+    "idx": 2,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6248,
+    "idx": 4,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Grimmsnarl",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6250,
+    "idx": 0,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Grimmsnarl",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6255,
+    "idx": 1,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6253,
+    "idx": 1,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Grimmsnarl",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6256,
+    "idx": 2,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6257,
+    "idx": 2,
+    "originalName": "F",
+    "originalNormalizedName": "F",
+    "resolvedSpecies": "Tsareena",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6262,
+    "idx": 1,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6263,
+    "idx": 2,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Grimmsnarl",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6267,
+    "idx": 3,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Grimmsnarl",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6268,
+    "idx": 4,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Grimmsnarl",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6271,
+    "idx": 2,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6270,
+    "idx": 1,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Grimmsnarl",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6273,
+    "idx": 4,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6274,
+    "idx": 3,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6277,
+    "idx": 0,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Grimmsnarl",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6284,
+    "idx": 4,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6282,
+    "idx": 1,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6283,
+    "idx": 4,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Grimmsnarl",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6287,
+    "idx": 1,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Grimmsnarl",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6287,
+    "idx": 3,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 5803,
+    "idx": 0,
+    "originalName": "F",
+    "originalNormalizedName": "F",
+    "resolvedSpecies": "Milotic",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 5803,
+    "idx": 2,
+    "originalName": "F",
+    "originalNormalizedName": "F",
+    "resolvedSpecies": "Ceruledge",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 5803,
+    "idx": 3,
+    "originalName": "F",
+    "originalNormalizedName": "F",
+    "resolvedSpecies": "Garchomp",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 5803,
+    "idx": 4,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Gallade",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 5803,
+    "idx": 5,
+    "originalName": "F",
+    "originalNormalizedName": "F",
+    "resolvedSpecies": "Ninetales-Alola",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 5820,
+    "idx": 5,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 5836,
+    "idx": 0,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Excadrill",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 5836,
+    "idx": 1,
+    "originalName": "F",
+    "originalNormalizedName": "F",
+    "resolvedSpecies": "Tyranitar",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 5836,
+    "idx": 2,
+    "originalName": "F",
+    "originalNormalizedName": "F",
+    "resolvedSpecies": "Kommo-o",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 5836,
+    "idx": 3,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Sneasler",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 5856,
+    "idx": 1,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6186,
+    "idx": 3,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6207,
+    "idx": 5,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  },
+  {
+    "teamId": 6285,
+    "idx": 4,
+    "originalName": "M",
+    "originalNormalizedName": "M",
+    "resolvedSpecies": "Basculegion",
+    "resolvedAt": "2026-08-26T05:03:02.167Z"
+  }
+]

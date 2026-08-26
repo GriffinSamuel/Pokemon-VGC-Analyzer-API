@@ -68,3 +68,12 @@ The Scrappy cluster was checked and is confirmed NOT a learnset hole (see Patter
 this file's count stays at 19; it does not drop to 11. Had the dex check instead shown a genuine
 gap, this file's Scrappy rows would move from "unresolved" to "resolvable, blocked on an upstream
 `seed_learnsets.js` fix" and the file would need regenerating at 11 rows.
+
+## Undo record for the 315 resolved rows
+
+`logs/repair_orphan_species_revert.json` is the positional undo record for the resolved rows in
+this file's complement (team_id, array index, original name, original normalizedName, resolved
+species) — written before the `--apply` that produced this file's 19, independent of the
+`repairedFrom` marker on each row. If the marker is ever lost or found to have a flaw, this file
+is the only other way back. Committed alongside this one for the same reason: a deliberate
+decision record, not a run artifact `.gitignore`'s `logs/` rule shouldn't catch.
