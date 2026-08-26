@@ -16,10 +16,52 @@
  *
  * The fix is to compare on toID() on both sides via a single up-front Map,
  * and to never let a missed match disappear silently again.
+ *
+ * SECOND BUG THIS REPLACES: Dex.learnsets.get(species) is PER-FORM and does
+ * NOT walk species.prevo. A real evolution keeps every level-up/egg/tutor
+ * move its pre-evolution could legally learn (that's how the games work —
+ * Showdown's own legality validator walks the prevo chain explicitly) but
+ * @pkmn/dex's compiled learnset data does not merge that in automatically.
+ * Confirmed live: Grimmsnarl's own dex learnset has Fake Out and Sucker
+ * Punch (apparently assigned directly) but NOT Parting Shot, which exists
+ * only on Impidimp's entry as a Gen 9 egg move ('9E') — a completely
+ * standard Prankster Grimmsnarl set was unrepresentable in this table.
+ * At full-dex scale: 395 species miss at least one prevo-inherited move,
+ * 3151 (species,move) pairs total, 87 of which are moves actually observed
+ * being played by that exact evolved species in tournament_teams (Kingambit
+ * + Sucker Punch, Infernape + Fake Out, Corviknight + Roost, etc.).
+ * Fixed by unioning each species' own learnset with the transitive union of
+ * every species in its prevo chain, each resolved through the same
+ * baseSpeciesFallback() used for the species' own form.
  */
 
 const { Dex, toID } = require('@pkmn/dex');
 const { baseSpeciesFallback } = require('../utils/species_base_form');
+
+/**
+ * Move-id set a species can draw on: its own dex learnset (falling back to
+ * baseSpeciesFallback() for battle-only/alias forms, same as before) UNIONED
+ * with the same for every species up its prevo chain, transitively.
+ */
+async function effectiveLearnsetIds(speciesName, cache) {
+  if (cache.has(speciesName)) return cache.get(speciesName);
+
+  const sp = Dex.species.get(speciesName);
+  let learnset = await Dex.learnsets.get(sp.name);
+  if (!learnset?.learnset) {
+    const { base } = baseSpeciesFallback(sp.name);
+    if (base) learnset = await Dex.learnsets.get(base);
+  }
+  const set = new Set(learnset?.learnset ? Object.keys(learnset.learnset) : []);
+
+  if (sp.prevo) {
+    const prevoSet = await effectiveLearnsetIds(sp.prevo, cache);
+    for (const m of prevoSet) set.add(m);
+  }
+
+  cache.set(speciesName, set);
+  return set;
+}
 
 /**
  * @param {import('pg').Pool | import('pg').PoolClient} client - anything
@@ -40,25 +82,18 @@ async function seedLearnsets(client) {
 
   let inserted = 0;
   const dropped = new Map();
+  const cache = new Map();
 
   for (const species of Dex.species.all()) {
     if (!species.exists || species.isNonstandard) continue;
 
-    let learnset = await Dex.learnsets.get(species.name);
-    if (!learnset?.learnset) {
-      // species.name is drawn straight from Dex.species.all(), so this is
-      // always a genuine dex identity — no mismatch is possible here, unlike
-      // the archetype_swaps.js callers which look up this project's own
-      // (sometimes invented) species names.
-      const { base } = baseSpeciesFallback(species.name);
-      if (base) learnset = await Dex.learnsets.get(base);
-    }
-    if (!learnset?.learnset) continue;
+    const moveIds = await effectiveLearnsetIds(species.name, cache);
+    if (moveIds.size === 0) continue;
 
     const pokemonId = pokemonIdByName.get(species.name);
     if (!pokemonId) continue;
 
-    for (const moveId of Object.keys(learnset.learnset)) {
+    for (const moveId of moveIds) {
       const dbMoveId = moveIdByToId.get(moveId);
       if (!dbMoveId) {
         dropped.set(moveId, (dropped.get(moveId) || 0) + 1);
