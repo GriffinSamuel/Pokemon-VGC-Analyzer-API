@@ -1,0 +1,322 @@
+[
+  {
+    "teamId": 271,
+    "pokemonIdx": "1",
+    "attackIdx": "0",
+    "originalString": "Thunder punch",
+    "rewrittenTo": "Thunder Punch",
+    "rewrittenAt": "2026-08-26T19:25:23.079Z"
+  },
+  {
+    "teamId": 3201,
+    "pokemonIdx": "5",
+    "attackIdx": "0",
+    "originalString": "protect",
+    "rewrittenTo": "Protect",
+    "rewrittenAt": "2026-08-26T19:25:23.080Z"
+  },
+  {
+    "teamId": 781,
+    "pokemonIdx": "1",
+    "attackIdx": "0",
+    "originalString": "dire claw",
+    "rewrittenTo": "Dire Claw",
+    "rewrittenAt": "2026-08-26T19:25:23.080Z"
+  },
+  {
+    "teamId": 781,
+    "pokemonIdx": "1",
+    "attackIdx": "2",
+    "originalString": "quick guard",
+    "rewrittenTo": "Quick Guard",
+    "rewrittenAt": "2026-08-26T19:25:23.080Z"
+  },
+  {
+    "teamId": 781,
+    "pokemonIdx": "2",
+    "attackIdx": "3",
+    "originalString": "trick room",
+    "rewrittenTo": "Trick Room",
+    "rewrittenAt": "2026-08-26T19:25:23.080Z"
+  },
+  {
+    "teamId": 781,
+    "pokemonIdx": "3",
+    "attackIdx": "2",
+    "originalString": "throat chop",
+    "rewrittenTo": "Throat Chop",
+    "rewrittenAt": "2026-08-26T19:25:23.080Z"
+  },
+  {
+    "teamId": 9,
+    "pokemonIdx": "2",
+    "attackIdx": "2",
+    "originalString": "will-o-wisp",
+    "rewrittenTo": "Will-O-Wisp",
+    "rewrittenAt": "2026-08-26T19:25:23.080Z"
+  },
+  {
+    "teamId": 556,
+    "pokemonIdx": "1",
+    "attackIdx": "2",
+    "originalString": "Trickroom",
+    "rewrittenTo": "Trick Room",
+    "rewrittenAt": "2026-08-26T19:25:23.080Z"
+  },
+  {
+    "teamId": 453,
+    "pokemonIdx": "5",
+    "attackIdx": "0",
+    "originalString": "muddy water",
+    "rewrittenTo": "Muddy Water",
+    "rewrittenAt": "2026-08-26T19:25:23.080Z"
+  },
+  {
+    "teamId": 453,
+    "pokemonIdx": "5",
+    "attackIdx": "3",
+    "originalString": "coil",
+    "rewrittenTo": "Coil",
+    "rewrittenAt": "2026-08-26T19:25:23.080Z"
+  },
+  {
+    "teamId": 777,
+    "pokemonIdx": "1",
+    "attackIdx": "2",
+    "originalString": "Tail Wind",
+    "rewrittenTo": "Tailwind",
+    "rewrittenAt": "2026-08-26T19:25:23.080Z"
+  },
+  {
+    "teamId": 897,
+    "pokemonIdx": "1",
+    "attackIdx": "3",
+    "originalString": "WIDE GUARD",
+    "rewrittenTo": "Wide Guard",
+    "rewrittenAt": "2026-08-26T19:25:23.080Z"
+  },
+  {
+    "teamId": 3261,
+    "pokemonIdx": "3",
+    "attackIdx": "0",
+    "originalString": "Wave crash",
+    "rewrittenTo": "Wave Crash",
+    "rewrittenAt": "2026-08-26T19:25:23.080Z"
+  },
+  {
+    "teamId": 3261,
+    "pokemonIdx": "3",
+    "attackIdx": "2",
+    "originalString": "Ice punch",
+    "rewrittenTo": "Ice Punch",
+    "rewrittenAt": "2026-08-26T19:25:23.080Z"
+  },
+  {
+    "teamId": 3291,
+    "pokemonIdx": "0",
+    "attackIdx": "0",
+    "originalString": "bellydrum",
+    "rewrittenTo": "Belly Drum",
+    "rewrittenAt": "2026-08-26T19:25:23.080Z"
+  },
+  {
+    "teamId": 3291,
+    "pokemonIdx": "0",
+    "attackIdx": "1",
+    "originalString": "bodyslam",
+    "rewrittenTo": "Body Slam",
+    "rewrittenAt": "2026-08-26T19:25:23.080Z"
+  },
+  {
+    "teamId": 3291,
+    "pokemonIdx": "0",
+    "attackIdx": "2",
+    "originalString": "earthquake",
+    "rewrittenTo": "Earthquake",
+    "rewrittenAt": "2026-08-26T19:25:23.080Z"
+  },
+  {
+    "teamId": 3291,
+    "pokemonIdx": "0",
+    "attackIdx": "3",
+    "originalString": "protect",
+    "rewrittenTo": "Protect",
+    "rewrittenAt": "2026-08-26T19:25:23.080Z"
+  },
+  {
+    "teamId": 3291,
+    "pokemonIdx": "1",
+    "attackIdx": "0",
+    "originalString": "hypervoice",
+    "rewrittenTo": "Hyper Voice",
+    "rewrittenAt": "2026-08-26T19:25:23.080Z"
+  },
+  {
+    "teamId": 3291,
+    "pokemonIdx": "1",
+    "attackIdx": "1",
+    "originalString": "trickroom",
+    "rewrittenTo": "Trick Room",
+    "rewrittenAt": "2026-08-26T19:25:23.080Z"
+  },
+  {
+    "teamId": 3291,
+    "pokemonIdx": "1",
+    "attackIdx": "2",
+    "originalString": "protect",
+    "rewrittenTo": "Protect",
+    "rewrittenAt": "2026-08-26T19:25:23.080Z"
+  },
+  {
+    "teamId": 3291,
+    "pokemonIdx": "1",
+    "attackIdx": "3",
+    "originalString": "healpulse",
+    "rewrittenTo": "Heal Pulse",
+    "rewrittenAt": "2026-08-26T19:25:23.080Z"
+  },
+  {
+    "teamId": 3291,
+    "pokemonIdx": "2",
+    "attackIdx": "0",
+    "originalString": "matchagotcha",
+    "rewrittenTo": "Matcha Gotcha",
+    "rewrittenAt": "2026-08-26T19:25:23.080Z"
+  },
+  {
+    "teamId": 3291,
+    "pokemonIdx": "2",
+    "attackIdx": "1",
+    "originalString": "lifedew",
+    "rewrittenTo": "Life Dew",
+    "rewrittenAt": "2026-08-26T19:25:23.080Z"
+  },
+  {
+    "teamId": 3291,
+    "pokemonIdx": "2",
+    "attackIdx": "2",
+    "originalString": "ragepowder",
+    "rewrittenTo": "Rage Powder",
+    "rewrittenAt": "2026-08-26T19:25:23.080Z"
+  },
+  {
+    "teamId": 3291,
+    "pokemonIdx": "2",
+    "attackIdx": "3",
+    "originalString": "trickroom",
+    "rewrittenTo": "Trick Room",
+    "rewrittenAt": "2026-08-26T19:25:23.080Z"
+  },
+  {
+    "teamId": 3291,
+    "pokemonIdx": "3",
+    "attackIdx": "0",
+    "originalString": "kingsshield",
+    "rewrittenTo": "King's Shield",
+    "rewrittenAt": "2026-08-26T19:25:23.080Z"
+  },
+  {
+    "teamId": 3291,
+    "pokemonIdx": "3",
+    "attackIdx": "1",
+    "originalString": "closecombat",
+    "rewrittenTo": "Close Combat",
+    "rewrittenAt": "2026-08-26T19:25:23.080Z"
+  },
+  {
+    "teamId": 3291,
+    "pokemonIdx": "3",
+    "attackIdx": "2",
+    "originalString": "poltergeist",
+    "rewrittenTo": "Poltergeist",
+    "rewrittenAt": "2026-08-26T19:25:23.080Z"
+  },
+  {
+    "teamId": 3291,
+    "pokemonIdx": "3",
+    "attackIdx": "3",
+    "originalString": "ironhead",
+    "rewrittenTo": "Iron Head",
+    "rewrittenAt": "2026-08-26T19:25:23.080Z"
+  },
+  {
+    "teamId": 3291,
+    "pokemonIdx": "4",
+    "attackIdx": "0",
+    "originalString": "psychic",
+    "rewrittenTo": "Psychic",
+    "rewrittenAt": "2026-08-26T19:25:23.080Z"
+  },
+  {
+    "teamId": 3291,
+    "pokemonIdx": "4",
+    "attackIdx": "1",
+    "originalString": "trickroom",
+    "rewrittenTo": "Trick Room",
+    "rewrittenAt": "2026-08-26T19:25:23.080Z"
+  },
+  {
+    "teamId": 3291,
+    "pokemonIdx": "4",
+    "attackIdx": "2",
+    "originalString": "protect",
+    "rewrittenTo": "Protect",
+    "rewrittenAt": "2026-08-26T19:25:23.080Z"
+  },
+  {
+    "teamId": 3291,
+    "pokemonIdx": "4",
+    "attackIdx": "3",
+    "originalString": "helpinghand",
+    "rewrittenTo": "Helping Hand",
+    "rewrittenAt": "2026-08-26T19:25:23.080Z"
+  },
+  {
+    "teamId": 3291,
+    "pokemonIdx": "5",
+    "attackIdx": "0",
+    "originalString": "fakeout",
+    "rewrittenTo": "Fake Out",
+    "rewrittenAt": "2026-08-26T19:25:23.080Z"
+  },
+  {
+    "teamId": 3291,
+    "pokemonIdx": "5",
+    "attackIdx": "1",
+    "originalString": "flareblitz",
+    "rewrittenTo": "Flare Blitz",
+    "rewrittenAt": "2026-08-26T19:25:23.080Z"
+  },
+  {
+    "teamId": 3291,
+    "pokemonIdx": "5",
+    "attackIdx": "2",
+    "originalString": "throat chop",
+    "rewrittenTo": "Throat Chop",
+    "rewrittenAt": "2026-08-26T19:25:23.080Z"
+  },
+  {
+    "teamId": 3291,
+    "pokemonIdx": "5",
+    "attackIdx": "3",
+    "originalString": "partingshot",
+    "rewrittenTo": "Parting Shot",
+    "rewrittenAt": "2026-08-26T19:25:23.080Z"
+  },
+  {
+    "teamId": 642,
+    "pokemonIdx": "1",
+    "attackIdx": "3",
+    "originalString": "Wide guard",
+    "rewrittenTo": "Wide Guard",
+    "rewrittenAt": "2026-08-26T19:25:23.080Z"
+  },
+  {
+    "teamId": 1043,
+    "pokemonIdx": "3",
+    "attackIdx": "2",
+    "originalString": "Earthpower",
+    "rewrittenTo": "Earth Power",
+    "rewrittenAt": "2026-08-26T19:25:23.080Z"
+  }
+]
