@@ -119,6 +119,8 @@ Champions uses **66 Stat Points total, max 32 per stat** (not classic 508-EV sys
 - `Starmie`/`Drampa` have no base-form `pokemon` table row — Mega rows exist but are unresolvable downstream until base species are seeded.
 - `nerd_of_now_calc.js` is a standalone ported calculator — not imported by any other module.
 - 21 of top 50 `usage_stats` entries have no `pokemon` table row (including Staraptor-Mega, various Megas, scraper artifacts).
+- `seed_learnsets.js` skips any species with `isNonstandard` set, so Aegislash (`'Past'`, 9 observed King's Shield rows) and Floette-Eternal-Mega (via `Floette-Mega`, `'Future'`, 167 observed Light of Ruin rows) get zero `pokemon_moves` coverage despite real play. Same defect class as `26531b3` (`isNonstandard` isn't a legality answer for this format), unfixed at the species level. Deferred — changes swap-pool legality, project owner's call.
+- `serebii.js:222`'s `cron.schedule()` runs at module load, ungated by `require.main === module` (unlike `app.listen()` two lines later in `app.js`) — anything requiring `app.js` leaks forever. Consistent with, not proven as the cause of, this file's noted runtime-inflation symptom. Agreed fix: an exported `startScheduler()` called only from `app.js`'s `require.main` block; not applied.
 
 ---
 
