@@ -16,3 +16,6 @@ __pycache__/
 
 diagnose_sp.js
 show_why.js
+
+.claude/scheduled_tasks.lock
+HANDOFF_*.md
