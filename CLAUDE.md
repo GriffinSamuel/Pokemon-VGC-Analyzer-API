@@ -123,6 +123,7 @@ Champions uses **66 Stat Points total, max 32 per stat** (not classic 508-EV sys
 - `serebii.js:222`'s `cron.schedule()` runs at module load, ungated by `require.main === module` (unlike `app.listen()` two lines later in `app.js`) — anything requiring `app.js` leaks forever. Consistent with, not proven as the cause of, this file's noted runtime-inflation symptom. Agreed fix: an exported `startScheduler()` called only from `app.js`'s `require.main` block; not applied.
 - Swap suggestions carry no confidence signal. Of the 256-species legal pool (`usage_stats`), only 129 have >=5 observed `tournament_teams` rows and 220 have >=1 — a candidate backed by ~100 rows and one backed by 2 render identically in archetype output.
 - `candidateProfile()` picks item/ability/spread/moves by four independent argmaxes, so it can weld two mutually exclusive real builds into one. `check_set_coherence.js` flags 38 of 129 species whose composed item + 4 moves no real row ever ran together (Venusaur: Sleep Powder never co-occurs with Life Orb across 21 Life Orb rows). It compares only item + all 4 moves, so 38 is a floor. Correlates with MORE data, not less.
+- Findings investigated and deliberately not fixed are in `DEFERRED.md`, with the reasoning and the agreed fix shape for each. Read it before starting anything that looks like new work.
 
 ---
 
