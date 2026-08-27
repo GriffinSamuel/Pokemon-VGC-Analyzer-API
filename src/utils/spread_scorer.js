@@ -161,6 +161,10 @@ const RECOIL_MOVES = new Map([
   ['volt tackle', 0.33],
   ['take down', 0.25],
   ['submission', 0.25],
+  // Confirmed via moves.flags in the DB (recoil: [1,2]) — missing here despite
+  // 167 observed tournament_teams rows (PHASE 4 investigation). Was silently
+  // never getting recoil display text or the PHASE 4 tiebreak.
+  ['light of ruin', 0.50],
 ]);
 
 const attackerRoleCache = new Map();

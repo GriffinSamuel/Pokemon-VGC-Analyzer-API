@@ -31,6 +31,7 @@ const { effectivenessAgainst } = require('./typeChart');
 const { getMostCommonSpread, getCommonSpreads, getCommonItems, getSpeciesRow } = require('./ev_observations');
 const { damagePercentRange, effectiveSpeed, selfInflictedStatus } = require('./team_analyzer');
 const { getOrComputeEvolutionarySpread } = require('./ev_optimizer');
+const { RECOIL_MOVES } = require('./spread_scorer');
 // Reached directly, not through team_analyzer's damagePercentRange, for ONE
 // reason: damagePercentRange never forwards a `field` object to the calculator
 // and has no way to express a -1 Attack stage. Screens, Friend Guard and
@@ -1648,7 +1649,17 @@ async function searchPoolForOhko(loss, poolNames, weather, exclude, archetype, t
       sp, ivs: { hp: 31 }, status: selfInflictedStatus(profile.item || '', profile.ability || ''),
     };
 
+    // PHASE 4 — recoil tiebreak. This loop already compares every candidate
+    // move for this Pokemon head-to-head (all must clear dmg.min >= 100 to
+    // qualify at all, so by construction every survivor here already secures
+    // the SAME outcome: a guaranteed OHKO). Past that threshold, extra damage
+    // buys nothing — so a recoil move should only win when it is the ONLY
+    // thing that reaches the OHKO; if a non-recoil move also gets there, the
+    // recoil bought nothing and the non-recoil move wins regardless of which
+    // has the higher raw percentage. This is a tiebreak, not a penalty curve —
+    // a recoil move that is the sole path to the KO still wins as before.
     let best = null;
+    let bestNonRecoil = null;
     // Slice first, filter second: the top six OBSERVED moves, then whichever of
     // those do damage. Filtering first reaches down the frequency list into
     // moves nobody actually runs, and manufactures a KO out of one of them.
@@ -1659,8 +1670,11 @@ async function searchPoolForOhko(loss, poolNames, weather, exclude, archetype, t
       // not a real damage figure. Reporting it as a guaranteed KO is worse than
       // reporting nothing.
       if (!dmg || dmg.min < 100 || dmg.bp_unresolved) continue;
-      if (!best || dmg.min > best.min) best = { move: mv.move, type: mv.type, frequency: round(mv.frequency || 0, 4), ...dmg };
+      const candidate = { move: mv.move, type: mv.type, frequency: round(mv.frequency || 0, 4), ...dmg };
+      if (!best || dmg.min > best.min) best = candidate;
+      if (!RECOIL_MOVES.has(lower(mv.move)) && (!bestNonRecoil || dmg.min > bestNonRecoil.min)) bestNonRecoil = candidate;
     }
+    if (bestNonRecoil) best = bestNonRecoil;
     if (!best) continue;
 
     // A Focus Sash on the target denies any single-hit KO from full HP, so
