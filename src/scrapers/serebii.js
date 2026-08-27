@@ -219,13 +219,16 @@ async function runSerebiiScraper() {
   }
 }
 
-cron.schedule('0 0,12 * * *', () => {
-  logger.info('Scheduled Serebii scrape triggered');
-  runSerebiiScraper();
-});
+function startScheduler() {
+  cron.schedule('0 0,12 * * *', () => {
+    logger.info('Scheduled Serebii scrape triggered');
+    runSerebiiScraper();
+  });
+}
 
 module.exports = {
   runSerebiiScraper,
+  startScheduler,
   damageCache,
   invalidateCacheForPokemon,
   buildCacheKey,

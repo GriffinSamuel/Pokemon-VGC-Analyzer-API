@@ -3,7 +3,7 @@ const cors = require('cors');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const logger = require('./utils/logger');
-const { runSerebiiScraper } = require('./scrapers/serebii');
+const { runSerebiiScraper, startScheduler } = require('./scrapers/serebii');
 const { auditMegaItemMappings } = require('./utils/normalize');
 
 const app = express();
@@ -64,6 +64,7 @@ const PORT = process.env.PORT || 3000;
 if (require.main === module) {
   runSerebiiScraper();
   auditMegaItemMappings();
+  startScheduler();
   app.listen(PORT, () => logger.info(`Server running on http://localhost:${PORT}`));
 }
 
