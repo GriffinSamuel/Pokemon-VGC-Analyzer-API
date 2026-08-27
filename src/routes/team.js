@@ -1380,7 +1380,7 @@ function buildTeamBuildText(responseBody, team) {
           // the comparison is unfalsifiable.
           const b = x.add_build;
           if (b) {
-            lines.push(`          set: ${b.spread_label || '(spread unknown)'} @ ${b.item || 'no item'}${b.ability ? ` (${b.ability})` : ''}  [${b.spread_source || 'source unknown'}]`);
+            lines.push(`          set: ${b.spread_label || '(spread unknown)'} @ ${b.item || 'no item'}${b.ability ? ` (${b.ability})` : ''}  [${b.spread_source || 'source unknown'}]${b.build_provenance ? ` (${b.build_provenance})` : ''}`);
             if ((b.moves || []).length > 0) {
               lines.push(`          moves: ${b.moves.map((mv) => mv.move).join(' / ')}${b.moves_truncated ? ' (+ more)' : ''}`);
             }
@@ -1432,7 +1432,8 @@ function buildTeamBuildText(responseBody, team) {
               lines.push(`            ${loss.statement}`);
               for (const rep of loss.replacements || []) {
                 const dmg = rep.damage_range ? `: ${rep.move} ${rep.damage_range}` : ` — ${rep.move}`;
-                lines.push(`              ${rep.pokemon} (${(rep.usage * 100).toFixed(1)}% usage)${dmg}`);
+                const prov = rep.build_provenance ? ` (${rep.build_provenance})` : '';
+                lines.push(`              ${rep.pokemon} (${(rep.usage * 100).toFixed(1)}% usage)${dmg}${prov}`);
               }
             }
             if (bf.losses_truncated) lines.push(`            (${bf.losses_total} irreplaceable losses total, list capped)`);

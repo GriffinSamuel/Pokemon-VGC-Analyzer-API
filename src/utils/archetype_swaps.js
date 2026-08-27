@@ -40,7 +40,6 @@ const { getOrComputeEvolutionarySpread } = require('./ev_optimizer');
 const { CalcDamage, getMoveData, buildStatsFromSP } = require('./nerd_of_now_calc');
 const { calcStat, natureMultiplierFor } = require('./stat_formula');
 const { baseSpeciesFallback } = require('./species_base_form');
-const { getAbilityFrequency } = require('./speed_context');
 const { round } = require('./format');
 
 const lower = (s) => String(s || '').toLowerCase();
@@ -124,8 +123,6 @@ const learnsetCache = new Map();
 const respreadCache = new Map();
 const candidateProfileCache = new Map();
 const moveRowCache = new Map();
-const observedMovesCache = new Map();
-const observedAbilityCache = new Map();
 const investmentCache = new Map();
 const candidateBuildCache = new Map();
 const threatSpeedCache = new Map();
@@ -143,69 +140,217 @@ async function getMoveRow(moveName) {
   return row;
 }
 
-/**
- * What a species is actually OBSERVED to run, from tournament_teams — the same
- * `pokemon->attacks` JSONB that archetype_matchups.js builds its per-archetype
- * move distributions from, but keyed by species across the whole dataset rather
- * than per archetype (this file cannot call into archetype_matchups.js, which
- * requires it).
- *
- * This is the source of truth for "what does this candidate bring", deliberately
- * in preference to its learnset: a learnset says Sableye CAN run Reflect, only
- * the tournament data says whether anyone does.
- */
-async function observedMovesFor(name) {
-  const key = lower(name);
-  if (observedMovesCache.has(key)) return observedMovesCache.get(key);
-  const fetch = async (n) => {
-    const { rows } = await pool.query(
-      `SELECT a.move_name AS move, COUNT(*)::int AS count
-         FROM tournament_teams t,
-              jsonb_array_elements(t.pokemon) p,
-              jsonb_array_elements_text(p->'attacks') AS a(move_name)
-        WHERE LOWER(COALESCE(p->>'normalizedName', p->>'name')) = $1
-        GROUP BY a.move_name
-        ORDER BY count DESC`,
-      [n]
-    ).catch(() => ({ rows: [] }));
-    return rows;
-  };
-  let rows = await fetch(key);
-  // Same base-form fallback observedItemsFor() uses, and for the same reason:
-  // alternate and Mega forms are recorded under the base name often enough that
-  // an empty result here is usually a naming miss, not a Pokemon nobody plays.
-  if (rows.length === 0 && key.includes('-')) rows = await fetch(key.split('-')[0]);
+// --- COMPOSITION LADDER (PHASE 3) --------------------------------------------
+//
+// candidateProfile() used to pick item, ability, spread and moves via FOUR
+// INDEPENDENT argmaxes over all observed rows of a species — and item came
+// from a DIFFERENT table (ev_observations) than ability/moves (tournament_teams),
+// so even the marginals weren't drawn from the same population. The result was
+// frequently a Pokemon nobody ever brought (Venusaur: Life Orb from the
+// aggressive build, Sleep Powder from the unrelated Focus Sash support build —
+// see scripts/check_set_coherence.js, which flagged 38 of 129 species this way).
+//
+// Replaced with STAGED, CONDITIONAL composition over a single joint source
+// (tournament_teams.pokemon[], the only place item/ability/nature/sp/moves and
+// teammates/archetype all live on the same row): item -> moves (from rows
+// running that item) -> ability, spread/nature (from rows matching both). The
+// pool those rows are drawn from widens only as far as it needs to:
+//   Level 1: rows of this species alongside a teammate also on the team being
+//            analyzed
+//   Level 2: rows of this species on the same archetype
+//   Level 3: all observed rows of this species
+// A level is used once it holds >= MIN_LEVEL_ROWS rows; if none do, Level 3 is
+// used regardless of size (a threat must never be suppressed for thin data —
+// see MIN_LEVEL_ROWS's comment).
 
-  const total = rows.reduce((sum, r) => sum + r.count, 0);
-  const out = [];
-  for (const r of rows) {
-    const row = await getMoveRow(r.move);
-    out.push({
-      move: row?.name || r.move,
+const { tagsForTeam } = require('./archetype_tags');
+
+// 8 rows, per the brief's explicit threshold rule. Checked live: with 129
+// species swept, this is NOT "nearly everything falls to Level 3" — see the
+// PHASE 3 commit message for the actual level-usage breakdown.
+const MIN_LEVEL_ROWS = 8;
+
+let allTeamsCache = null;
+async function getAllTeamMonArrays() {
+  if (allTeamsCache) return allTeamsCache;
+  const { rows } = await pool.query('SELECT pokemon FROM tournament_teams');
+  allTeamsCache = rows
+    .map((r) => (Array.isArray(r.pokemon) ? r.pokemon : []))
+    .filter((mons) => mons.length > 0);
+  return allTeamsCache;
+}
+
+/**
+ * Every observed occurrence of `nameLower` across tournament_teams, each
+ * carrying its own item/ability/nature/sp/moves plus that occurrence's
+ * teammates and archetype tags (derived from its whole team) — the single
+ * joint source every stage of the ladder below draws from.
+ */
+const occurrenceCache = new Map();
+async function observedOccurrences(nameLower) {
+  if (occurrenceCache.has(nameLower)) return occurrenceCache.get(nameLower);
+  const teams = await getAllTeamMonArrays();
+  const occurrences = [];
+  for (const mons of teams) {
+    let matched = null;
+    for (const mon of mons) {
+      if (lower(mon.normalizedName || mon.name) === nameLower) { matched = mon; break; }
+    }
+    if (!matched) continue;
+    const spTotal = matched.evs
+      ? Object.values(matched.evs).reduce((sum, v) => sum + (v || 0), 0)
+      : 0;
+    occurrences.push({
+      item: matched.item || null,
+      ability: matched.ability || null,
+      nature: matched.nature || null,
+      // The scraped field is named `evs` but stores Champions SP (0-32/stat,
+      // 66 total) directly — see CLAUDE.md's SP System section. Only trust it
+      // as a real spread when it actually sums to something (many rows have
+      // no spread data at all: 2928 of 10602 total pokemon rows, per PHASE 1c
+      // investigation notes).
+      sp: spTotal > 0 ? matched.evs : null,
+      moves: matched.attacks || [],
+      teammates: new Set(
+        mons.filter((m) => m !== matched)
+          .map((m) => lower(m.normalizedName || m.name))
+          .filter(Boolean)
+      ),
+      archetypes: tagsForTeam(mons),
+    });
+  }
+  occurrenceCache.set(nameLower, occurrences);
+  return occurrences;
+}
+
+/** Rank-1 by count, or null if the pool has no non-null values for this key. */
+function argmaxBy(items, keyFn) {
+  const counts = new Map();
+  for (const it of items) {
+    const k = keyFn(it);
+    if (k == null || k === '') continue;
+    counts.set(k, (counts.get(k) || 0) + 1);
+  }
+  let best = null;
+  let bestCount = 0;
+  for (const [k, c] of counts) {
+    if (c > bestCount) { best = k; bestCount = c; }
+  }
+  return best;
+}
+
+function topMoveNames(items, n) {
+  const counts = new Map();
+  for (const it of items) {
+    for (const mv of it.moves || []) counts.set(mv, (counts.get(mv) || 0) + 1);
+  }
+  return [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, n).map(([mv]) => mv);
+}
+
+/**
+ * The single most common EXACT moveset among `items` — a joint pick, not four
+ * independent per-move argmaxes. Marginal top-4-by-frequency can straddle two
+ * mutually exclusive move slots (each individually more common than the move
+ * that actually accompanies either of them), landing on a 4-move combination
+ * nobody ran even after conditioning on item. Picking the whole moveset
+ * together guarantees the result is one real row's exact loadout. Falls back
+ * to the marginal top-4 only when no row in `items` has a usable moves array
+ * (e.g. every row's attacks field was empty).
+ */
+function mostCommonMoveset(items, n) {
+  const counts = new Map();
+  for (const it of items) {
+    const moves = it.moves || [];
+    if (moves.length === 0) continue;
+    const key = JSON.stringify([...moves].sort());
+    if (!counts.has(key)) counts.set(key, { moves, count: 0 });
+    counts.get(key).count += 1;
+  }
+  let best = null;
+  let bestCount = 0;
+  for (const v of counts.values()) {
+    if (v.count > bestCount) { best = v.moves; bestCount = v.count; }
+  }
+  return best ? best.slice(0, n) : topMoveNames(items, n);
+}
+
+/**
+ * Which level pool to compose from, per the threshold rule: use a level once
+ * it holds >= MIN_LEVEL_ROWS; otherwise Level 3 regardless of size. NEVER
+ * suppress a species for thin data — a threat vanishing from a matchup reads
+ * as safety, the most dangerous way to be wrong.
+ */
+function selectLevel(occurrences, archetype, teamSpeciesSet) {
+  if (teamSpeciesSet && teamSpeciesSet.size > 0) {
+    const l1 = occurrences.filter((o) => [...o.teammates].some((t) => teamSpeciesSet.has(t)));
+    if (l1.length >= MIN_LEVEL_ROWS) {
+      return { level: 1, pool: l1, label: `from ${l1.length} observations alongside a shared teammate` };
+    }
+  }
+  if (archetype) {
+    const l2 = occurrences.filter((o) => o.archetypes.has(archetype));
+    if (l2.length >= MIN_LEVEL_ROWS) {
+      return { level: 2, pool: l2, label: `from ${l2.length} ${archetype} observations` };
+    }
+  }
+  const tooFew = archetype ? ` — too few ${archetype} rows` : '';
+  return { level: 3, pool: occurrences, label: `from all ${occurrences.length} observed${tooFew}` };
+}
+
+/**
+ * The staged, conditional composition itself: item -> moves|ability (rows
+ * running that item) -> nature/spread (rows matching item, then falling back
+ * to any row of this species with spread data if the item-conditioned pool
+ * has none — candidateBuild() already has its own evolutionary-search
+ * fallback for a still-null spread, so this never blocks on missing SP data).
+ */
+async function composeFromLadder(nameLower, archetype, teamSpeciesSet) {
+  const occurrences = await observedOccurrences(nameLower);
+  if (occurrences.length === 0) return null;
+
+  const { level, pool: levelPool, label } = selectLevel(occurrences, archetype, teamSpeciesSet);
+
+  const item = argmaxBy(levelPool, (o) => o.item);
+  const itemPool = item != null ? levelPool.filter((o) => o.item === item) : [];
+  const conditionedPool = itemPool.length > 0 ? itemPool : levelPool;
+
+  const moveNames = mostCommonMoveset(conditionedPool, 4);
+  const moves = [];
+  for (const mv of moveNames) {
+    const row = await getMoveRow(mv);
+    const count = conditionedPool.reduce((s, o) => s + ((o.moves || []).includes(mv) ? 1 : 0), 0);
+    moves.push({
+      move: row?.name || mv,
       type: row?.type || null,
       category: row?.category || null,
       power: row?.power || 0,
-      frequency: total > 0 ? r.count / total : 0,
+      frequency: conditionedPool.length > 0 ? count / conditionedPool.length : 0,
     });
   }
-  observedMovesCache.set(key, out);
-  return out;
-}
 
-/** Most common observed ability, falling back to the species' first ability. */
-async function observedAbilityFor(name, row) {
-  const key = lower(name);
-  if (observedAbilityCache.has(key)) return observedAbilityCache.get(key);
-  let dist = await getAbilityFrequency(key).catch(() => []);
-  if (dist.length === 0 && key.includes('-')) {
-    dist = await getAbilityFrequency(key.split('-')[0]).catch(() => []);
+  const ability = argmaxBy(conditionedPool, (o) => o.ability);
+
+  let spreadPool = conditionedPool.filter((o) => o.sp != null);
+  if (spreadPool.length === 0) spreadPool = occurrences.filter((o) => o.sp != null);
+  let spread = null;
+  if (spreadPool.length > 0) {
+    const spCounts = new Map();
+    for (const o of spreadPool) {
+      const k = JSON.stringify(o.sp) + '|' + (o.nature || '');
+      if (!spCounts.has(k)) spCounts.set(k, { sp: o.sp, nature: o.nature, count: 0 });
+      spCounts.get(k).count += 1;
+    }
+    const best = [...spCounts.values()].sort((a, b) => b.count - a.count)[0];
+    spread = { sp: best.sp, nature: best.nature, observations: best.count, total_observations: spreadPool.length };
   }
-  // A Mega's ability is fixed by the form, so the pokemon table wins over the
-  // scraped value — the same correction archetype_matchups.js applies, for the
-  // same documented reason (tournament_teams records the BASE form's ability).
-  const ability = /-mega/i.test(key) ? (row?.ability1 || null) : (dist[0]?.ability || row?.ability1 || null);
-  observedAbilityCache.set(key, ability);
-  return ability;
+
+  return {
+    item,
+    ability,
+    moves,
+    spread,
+    provenance: { level, label, observation_count: levelPool.length, total_observed: occurrences.length },
+  };
 }
 
 /**
@@ -937,23 +1082,36 @@ async function deriveRole({ name, row, moves, sp, nature, item, ability, metaMed
 
 // --- 3. POKEMON SWAPS --------------------------------------------------------
 
-async function candidateProfile(name) {
+/**
+ * @param {string} name
+ * @param {{archetype?: string, teamSpeciesSet?: Set<string>}} [context] — the
+ *   archetype being analyzed and the (lowercased) species already on the team
+ *   under analysis, both optional. Without them, composition still works —
+ *   it just starts at Level 2 (archetype-only) or falls straight to Level 3
+ *   (all observed rows) — but callers scoped to one archetype/team (which is
+ *   every real caller in this file) should always pass both, so the composed
+ *   build actually makes sense for the matchup it's being shown in.
+ */
+async function candidateProfile(name, context = {}) {
   const key = lower(name);
-  if (candidateProfileCache.has(key)) return candidateProfileCache.get(key);
+  const { archetype = null, teamSpeciesSet = null } = context;
+  const cacheKey = `${key}|${archetype || ''}`;
+  if (candidateProfileCache.has(cacheKey)) return candidateProfileCache.get(cacheKey);
   const row = await getSpeciesRow(key).catch(() => null);
-  if (!row) { candidateProfileCache.set(key, null); return null; }
-  const spread = await getMostCommonSpread(key).catch(() => null);
-  const items = await getCommonItems(key, 1).catch(() => []);
+  if (!row) { candidateProfileCache.set(cacheKey, null); return null; }
+
+  const composed = await composeFromLadder(key, archetype, teamSpeciesSet);
   const profile = {
     name: row.name,
     row,
     types: [row.type1, row.type2].filter(Boolean),
-    spread,
-    item: items[0]?.item || '',
-    ability: await observedAbilityFor(key, row),
-    moves: await observedMovesFor(key),
+    spread: composed?.spread || null,
+    item: composed?.item || '',
+    ability: composed?.ability || row.ability1 || null,
+    moves: composed?.moves || [],
+    provenance: composed?.provenance || null,
   };
-  candidateProfileCache.set(key, profile);
+  candidateProfileCache.set(cacheKey, profile);
   return profile;
 }
 
@@ -1009,7 +1167,16 @@ function formatSpread(sp, nature) {
  * every number came from.
  */
 async function candidateBuild(profile, fieldOpts) {
-  const key = lower(profile.name);
+  // Content-keyed, not just species name: profile is now archetype/team-
+  // conditioned (see candidateProfile), so two different archetypes can
+  // legitimately produce two different profiles — and therefore two
+  // different builds — for the same species. Keying on name alone would let
+  // whichever archetype computed first silently win for every other one.
+  const key = [
+    lower(profile.name), profile.item || '', profile.ability || '',
+    (profile.moves || []).map((m) => m.move).join(','),
+    JSON.stringify(profile.spread?.sp || null), profile.spread?.nature || '',
+  ].join('|');
   if (candidateBuildCache.has(key)) return candidateBuildCache.get(key);
 
   let sp = null;
@@ -1049,6 +1216,7 @@ async function candidateBuild(profile, fieldOpts) {
     moves_truncated: Math.max(0, setMoves.length - used.length),
     damaging_moves_outside_set: Math.max(0, damagingObserved.length - used.length),
     observed_move_count: (profile.moves || []).length,
+    provenance: profile.provenance || null,
   };
   candidateBuildCache.set(key, build);
   return build;
@@ -1462,7 +1630,7 @@ function irreplaceableLosses(candidate, dropped, remainingBuilds, defenders, wea
   return losses;
 }
 
-async function searchPoolForOhko(loss, poolNames, weather, exclude) {
+async function searchPoolForOhko(loss, poolNames, weather, exclude, archetype, teamSpeciesSet) {
   const found = [];
   let profileMisses = 0;
   let searched = 0;
@@ -1471,7 +1639,7 @@ async function searchPoolForOhko(loss, poolNames, weather, exclude) {
   for (const entry of poolNames) {
     if (exclude.has(lower(entry.name))) continue;
     searched += 1;
-    const profile = await candidateProfile(entry.name);
+    const profile = await candidateProfile(entry.name, { archetype, teamSpeciesSet });
     if (!profile) { profileMisses += 1; continue; }
     const sp = profile.spread?.sp || null;
     if (!sp) continue;
@@ -1531,6 +1699,7 @@ async function searchPoolForOhko(loss, poolNames, weather, exclude) {
       sash_denies_ohko: sashed ? sashed.min < 100 : null,
       sash_replaces_item: loss.defender.side.item || null,
       verified_on_optimised_spread: false,
+      build_provenance: profile.provenance?.label || null,
     });
   }
 
@@ -1541,7 +1710,7 @@ async function searchPoolForOhko(loss, poolNames, weather, exclude) {
   return { found, searched, profileMisses };
 }
 
-async function searchPoolForCoverage(loss, poolNames, defenders, weather, exclude) {
+async function searchPoolForCoverage(loss, poolNames, defenders, weather, exclude, archetype, teamSpeciesSet) {
   const found = [];
   let profileMisses = 0;
   let searched = 0;
@@ -1549,7 +1718,7 @@ async function searchPoolForCoverage(loss, poolNames, defenders, weather, exclud
   for (const entry of poolNames) {
     if (exclude.has(lower(entry.name))) continue;
     searched += 1;
-    const profile = await candidateProfile(entry.name);
+    const profile = await candidateProfile(entry.name, { archetype, teamSpeciesSet });
     if (!profile) { profileMisses += 1; continue; }
     const mv = (profile.moves || []).find((m) => (m.power || 0) > 0 && m.type === loss.what);
     if (!mv) continue;
@@ -1598,6 +1767,7 @@ async function searchPoolForCoverage(loss, poolNames, defenders, weather, exclud
       sash_denies_ohko: null,
       sash_replaces_item: null,
       verified_on_optimised_spread: false,
+      build_provenance: profile.provenance?.label || null,
     });
   }
 
@@ -1611,9 +1781,9 @@ async function searchPoolForCoverage(loss, poolNames, defenders, weather, exclud
  * loss is the one thing that genuinely will not finish; the shortlist that
  * actually gets reported is then re-checked on the spread we would really build.
  */
-async function verifyBackfill(entries, loss, weather, fieldOpts) {
+async function verifyBackfill(entries, loss, weather, fieldOpts, archetype, teamSpeciesSet) {
   for (const e of entries.slice(0, BACKFILL_VERIFY_LIMIT)) {
-    const profile = await candidateProfile(e.pokemon);
+    const profile = await candidateProfile(e.pokemon, { archetype, teamSpeciesSet });
     if (!profile) continue;
     const build = await candidateBuild(profile, fieldOpts);
     if (!build || !build.sp || build.spread_source !== 'evolutionary') continue;
@@ -1632,19 +1802,20 @@ async function verifyBackfill(entries, loss, weather, fieldOpts) {
   return entries;
 }
 
-async function backfillAnalysis(candidate, dropped, team, defenders, weather, poolNames, fieldOpts) {
+async function backfillAnalysis(candidate, dropped, team, defenders, weather, poolNames, fieldOpts, archetype) {
   const remainingBuilds = team.filter((m) => m.pokemon !== dropped.name).map(memberBuild);
   const all = irreplaceableLosses(candidate, dropped, remainingBuilds, defenders, weather);
   const capped = capList(all, MAX_BACKFILL_LOSSES);
   const exclude = new Set([...team.map((m) => lower(m.pokemon)), lower(candidate.name)]);
+  const teamSpeciesSet = new Set(team.map((m) => lower(m.pokemon)));
 
   const out = [];
   for (const loss of capped.list) {
     const scan = loss.kind === 'ohko'
-      ? await searchPoolForOhko(loss, poolNames, weather, exclude)
-      : await searchPoolForCoverage(loss, poolNames, defenders, weather, exclude);
+      ? await searchPoolForOhko(loss, poolNames, weather, exclude, archetype, teamSpeciesSet)
+      : await searchPoolForCoverage(loss, poolNames, defenders, weather, exclude, archetype, teamSpeciesSet);
     const top = capList(scan.found, MAX_BACKFILL_RESULTS);
-    await verifyBackfill(top.list, loss, weather, fieldOpts);
+    await verifyBackfill(top.list, loss, weather, fieldOpts, archetype, teamSpeciesSet);
 
     out.push({
       kind: loss.kind,
@@ -1713,7 +1884,7 @@ async function buildPokemonSwaps(team, threats, weakestMembers, teamValues, arch
   let profileMisses = 0;
   for (const r of usageRows) {
     if (onTeam.has(lower(r.pokemon_name))) continue;
-    const profile = await candidateProfile(r.pokemon_name);
+    const profile = await candidateProfile(r.pokemon_name, { archetype, teamSpeciesSet: onTeam });
     // Counted, not swallowed. A Pokemon with no `pokemon` table row is silently
     // unswappable, and that is exactly the documented Mega-form data gap — worth
     // seeing in the output rather than inferring from an absence.
@@ -1778,7 +1949,7 @@ async function buildPokemonSwaps(team, threats, weakestMembers, teamValues, arch
 
     let best = null;
     for (const cand of shortlist) {
-      const profile = await candidateProfile(cand.name);
+      const profile = await candidateProfile(cand.name, { archetype, teamSpeciesSet: onTeam });
       if (!profile) continue;
       const build = await candidateBuild(profile, fieldOpts);
       if (!build) continue;
@@ -1803,7 +1974,7 @@ async function buildPokemonSwaps(team, threats, weakestMembers, teamValues, arch
       metaMedianSpeed, weather,
     });
     const fieldEffects = await fieldEffectAnalysis(best.build, outgoing.pokemon, team, defenders, threats, weather);
-    const backfill = await backfillAnalysis(best.build, dropped, team, defenders, weather, poolNames, fieldOpts);
+    const backfill = await backfillAnalysis(best.build, dropped, team, defenders, weather, poolNames, fieldOpts, archetype);
 
     suggestions.push({
       drop: outgoing.pokemon,
@@ -1817,7 +1988,8 @@ async function buildPokemonSwaps(team, threats, weakestMembers, teamValues, arch
       // ended on "matches up better", which was a type-chart opinion presented
       // in the same voice as the damage numbers around it.
       reason: `${outgoing.pokemon} contributes least against ${archetype} (${outgoing.why}) and holds no irreplaceable team role. `
-        + `${best.build.name} (${best.build.types.join('/')}, ${addRole.role || 'role underivable'}) was picked from ${shortlist.length} real-calced candidates: `
+        + `${best.build.name} (${best.build.types.join('/')}, ${addRole.role || 'role underivable'}) was picked from ${shortlist.length} real-calced candidates `
+        + `(build composed ${best.build.provenance?.label || 'from all observed rows'}): `
         + `it guarantees a KO on ${best.delta.totals.gains_ohko_on} threat${best.delta.totals.gains_ohko_on === 1 ? '' : 's'} ${outgoing.pokemon} does not, `
         + `gives up ${best.delta.totals.loses_ohko_on}, `
         + `survives ${best.delta.totals.newly_survives} incoming attack${best.delta.totals.newly_survives === 1 ? '' : 's'} that KO ${outgoing.pokemon}, `
@@ -1834,6 +2006,7 @@ async function buildPokemonSwaps(team, threats, weakestMembers, teamValues, arch
         moves: best.build.moves.map((mv) => ({ move: mv.move, type: mv.type, category: mv.category, power: mv.power })),
         moves_source: best.build.moves_source,
         moves_truncated: best.build.moves_truncated,
+        build_provenance: best.build.provenance?.label || null,
       },
       drop_build: {
         spread_source: dropped.spread_source,
@@ -1946,4 +2119,10 @@ module.exports = {
   ROLE_VOCABULARY,
   SWEEPER_MIN_OFFENSIVE_SP,
   SWEEPER_MIN_DAMAGING_MOVES,
+  // PHASE 3: exported so scripts/check_set_coherence.js validates the actual
+  // composition code path (per archetype) instead of re-implementing a
+  // parallel copy of it that could silently drift.
+  candidateProfile,
+  observedOccurrences,
+  MIN_LEVEL_ROWS,
 };

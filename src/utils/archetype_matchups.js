@@ -39,24 +39,16 @@ const {
   damagePercentRange, effectiveSpeed, typesOf, selfInflictedStatus,
 } = require('./team_analyzer');
 const { buildSwaps, teamValueOf } = require('./archetype_swaps');
+const {
+  WEATHER_ABILITY, WEATHER_MOVE, WEATHER_ARCHETYPE, TRICK_ROOM_ARCHETYPE, HYPER_OFFENSE_ARCHETYPE,
+  ALL_ARCHETYPES, tagsForTeam,
+} = require('./archetype_tags');
 
 // --- ARCHETYPE DEFINITIONS ---------------------------------------------------
-
-const WEATHER_ABILITY = {
-  drizzle: 'Rain', drought: 'Sun', 'sand stream': 'Sand', 'snow warning': 'Snow',
-};
-const WEATHER_MOVE = {
-  'rain dance': 'Rain', 'sunny day': 'Sun', sandstorm: 'Sand',
-  snowscape: 'Snow', hail: 'Snow',
-};
-const WEATHER_ARCHETYPE = { Rain: 'Rain team', Sun: 'Sun team', Sand: 'Sand team', Snow: 'Snow team' };
-const TRICK_ROOM_ARCHETYPE = 'Trick Room team';
-const HYPER_OFFENSE_ARCHETYPE = 'Hyper Offense';
-
-const ALL_ARCHETYPES = [
-  'Rain team', 'Sun team', 'Sand team', 'Snow team',
-  TRICK_ROOM_ARCHETYPE, HYPER_OFFENSE_ARCHETYPE,
-];
+// Weather/TR/Hyper-Offense definitions and tagsForTeam() now live in
+// archetype_tags.js — shared with archetype_swaps.js's candidateProfile()
+// ladder, which needs the same per-team archetype tags without a circular
+// require (this file already requires buildSwaps/teamValueOf from there).
 
 // Roles that count as a sweeper. Support roles are explicitly excluded — a
 // fast_support Whimsicott is not a win condition.
@@ -70,35 +62,6 @@ const UTILITY_MOVES = {
 const SPREAD_HEAVY_ARCHETYPES = new Set(['Sand team', 'Snow team', 'Hyper Offense']);
 
 const lower = (s) => String(s || '').toLowerCase();
-
-/** Tags for one tournament team's parsed Pokemon array. */
-function tagsForTeam(mons) {
-  const tags = new Set();
-  let hasTrickRoomSetter = false;
-  let hasTailwind = false;
-
-  for (const mon of mons || []) {
-    const attacks = (mon.attacks || []).map(lower);
-    const attackSet = new Set(attacks);
-    const ability = lower(mon.ability);
-
-    const byAbility = WEATHER_ABILITY[ability];
-    if (byAbility) tags.add(WEATHER_ARCHETYPE[byAbility]);
-    for (const atk of attacks) {
-      const byMove = WEATHER_MOVE[atk];
-      if (byMove) tags.add(WEATHER_ARCHETYPE[byMove]);
-    }
-
-    // Imprison on the SAME Pokemon cancels it as a TR setter.
-    if (attackSet.has('trick room') && !attackSet.has('imprison')) hasTrickRoomSetter = true;
-    if (attackSet.has('tailwind')) hasTailwind = true;
-  }
-
-  if (hasTrickRoomSetter) tags.add(TRICK_ROOM_ARCHETYPE);
-  // Hyper Offense is the residual: speed control without weather or TR.
-  if (tags.size === 0 && hasTailwind) tags.add(HYPER_OFFENSE_ARCHETYPE);
-  return tags;
-}
 
 /**
  * Scan every tournament team once, tag it, and accumulate per-archetype member
