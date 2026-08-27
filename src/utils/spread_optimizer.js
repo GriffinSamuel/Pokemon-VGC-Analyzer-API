@@ -6,6 +6,26 @@ const { getNerdOfNowSets } = require('./nerd_of_now');
 
 const EMPTY_LOCKED = new Set(); // default "no locked stats" for callers outside findOptimalSpread (e.g. direct tests)
 
+// Seeded PRNG (mulberry32) so a GA run is reproducible run-to-run and
+// process-to-process on identical input. Bare Math.random() previously made
+// before/after rating comparisons meaningless — scores moved ~+/-3 between
+// runs of the identical search. findOptimalSpread() creates one of these per
+// call, seeded from GA_DEFAULT_SEED unless a caller passes rngSeed, and
+// threads it explicitly into every function below that consumes randomness
+// (crossover, mutate, pickWeightedByRank). Each function still defaults its
+// own `rng` parameter to Math.random so direct/standalone calls (e.g. tests
+// exercising crossover() in isolation) keep their prior behavior.
+const GA_DEFAULT_SEED = 0x5eed1234;
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return function () {
+    a |= 0; a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
 // SP validation + clamping (REGRESSION A): verify no stat exceeds 32 and
 // total does not exceed 66 after every GA operation. If violated, clamp
 // values to valid range rather than crashing; log a warning.
@@ -307,10 +327,10 @@ function generateCandidate(weights, lockedIndices = EMPTY_LOCKED, role, pokemonR
 // cap/redistribute pass. `lockedIndices` (FIX 1): both parents should already be
 // 0 there, but locked indices are still force-zeroed and excluded from the
 // residual fixup loop as a hard guarantee, not just an assumption about parents.
-function crossover(parentSpA, parentSpB, weights, lockedIndices = EMPTY_LOCKED) {
+function crossover(parentSpA, parentSpB, weights, lockedIndices = EMPTY_LOCKED, rng = Math.random) {
   const a = spreadToArray(parentSpA);
   const b = spreadToArray(parentSpB);
-  let values = a.map((v, i) => (Math.random() < 0.5 ? v : b[i]));
+  let values = a.map((v, i) => (rng() < 0.5 ? v : b[i]));
   for (const i of lockedIndices) values[i] = 0;
 
   let sum = sumArr(values);
@@ -337,15 +357,15 @@ function crossover(parentSpA, parentSpB, weights, lockedIndices = EMPTY_LOCKED) 
 // to 0-32, then repair the total (subtract from lowest-weighted if over budget,
 // top up the highest-weighted stats if under 60). `lockedIndices` (FIX 1): never
 // selected for mutation and never a top-up target — stays at 0 through mutation.
-function mutate(eliteSp, weights, lockedIndices = EMPTY_LOCKED) {
+function mutate(eliteSp, weights, lockedIndices = EMPTY_LOCKED, rng = Math.random) {
   const values = spreadToArray(eliteSp);
   for (const i of lockedIndices) values[i] = 0;
   const mutableIndices = STAT_ORDER.map((_, i) => i).filter((i) => !lockedIndices.has(i));
-  const numMutations = Math.min(1 + Math.floor(Math.random() * 3), mutableIndices.length);
+  const numMutations = Math.min(1 + Math.floor(rng() * 3), mutableIndices.length);
   const indices = new Set();
-  while (indices.size < numMutations) indices.add(mutableIndices[Math.floor(Math.random() * mutableIndices.length)]);
+  while (indices.size < numMutations) indices.add(mutableIndices[Math.floor(rng() * mutableIndices.length)]);
   for (const i of indices) {
-    const delta = Math.floor(Math.random() * 17) - 8;
+    const delta = Math.floor(rng() * 17) - 8;
     values[i] = clamp(values[i] + delta, 0, SP_CAP_PER_STAT);
   }
 
@@ -378,9 +398,9 @@ function mutate(eliteSp, weights, lockedIndices = EMPTY_LOCKED) {
 // Rank-weighted random pick: elites must already be sorted best-first. Weight is
 // linear in rank (n - index), so the top elite is picked ~n times as often as
 // the bottom one, without ever fully excluding lower-ranked elites.
-function pickWeightedByRank(elites) {
+function pickWeightedByRank(elites, rng = Math.random) {
   const n = elites.length;
-  let r = Math.random() * ((n * (n + 1)) / 2);
+  let r = rng() * ((n * (n + 1)) / 2);
   for (let i = 0; i < n; i++) {
     r -= (n - i);
     if (r <= 0) return elites[i];
@@ -477,8 +497,9 @@ function determineLockedIndices(role, pokemonRow) {
  * (evolutionary_worker.js) already isolates the extra per-Pokemon cost onto its
  * own OS thread, so this doesn't change individual /api/recommend/evs timing.
  */
-async function findOptimalSpread(pokemon, nature, role, threatMatrix, metaContext, evObservations, item, teamBuild = false, seeds = null, fieldOpts) {
+async function findOptimalSpread(pokemon, nature, role, threatMatrix, metaContext, evObservations, item, teamBuild = false, seeds = null, fieldOpts, rngSeed = GA_DEFAULT_SEED) {
   const startTime = Date.now();
+  const rng = mulberry32(rngSeed);
   const weights = ROLE_WEIGHTS[role] || ROLE_WEIGHTS.fast_offense;
   const lockedIndices = determineLockedIndices(role, pokemon);
   const popInit = teamBuild ? TEAM_BUILD_POP_INIT : POP_INIT;
@@ -557,15 +578,15 @@ async function findOptimalSpread(pokemon, nature, role, threatMatrix, metaContex
     const next = [...elites];
 
     for (let i = 0; i < CROSSOVER_COUNT; i++) {
-      const a = pickWeightedByRank(elites);
-      const b = pickWeightedByRank(elites);
-      const c = crossover(a.sp, b.sp, weights, lockedIndices);
+      const a = pickWeightedByRank(elites, rng);
+      const b = pickWeightedByRank(elites, rng);
+      const c = crossover(a.sp, b.sp, weights, lockedIndices, rng);
       POST_VALIDATION_HOOK(c);
       next.push({ sp: c });
     }
     for (let i = 0; i < MUTATION_COUNT; i++) {
-      const e = pickWeightedByRank(elites);
-      const m = mutate(e.sp, weights, lockedIndices);
+      const e = pickWeightedByRank(elites, rng);
+      const m = mutate(e.sp, weights, lockedIndices, rng);
       POST_VALIDATION_HOOK(m);
       next.push({ sp: m });
     }
@@ -744,4 +765,6 @@ module.exports = {
   ROLE_WEIGHTS,
   POP_INIT,
   GENERATIONS,
+  mulberry32,
+  GA_DEFAULT_SEED,
 };
