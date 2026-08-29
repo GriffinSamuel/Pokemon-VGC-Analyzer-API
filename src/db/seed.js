@@ -1,6 +1,6 @@
-const { Dex } = require('@pkmn/dex');
+const { Dex, toID } = require('@pkmn/dex');
 const pool = require('./pool');
-const { seedLearnsets } = require('./seed_learnsets');
+const { seedLearnsets, getObservedSpeciesIds } = require('./seed_learnsets');
 const { insertMoveRow } = require('./seed_moves');
 
 async function seed() {
@@ -25,8 +25,18 @@ async function seed() {
     }
 
     console.log('Seeding pokemon...');
+    // TASK D #1: isNonstandard means "not obtainable in a fresh current-gen
+    // save", not "illegal in this format" — this gate used to exclude every
+    // dex-flagged Past/Future species from the `pokemon` table regardless of
+    // real play, including Aegislash (14 observed tournament_teams rows).
+    // seed_learnsets.js's own copy of this gate was fixed already, but that
+    // only ever controlled `pokemon_moves` — Aegislash still had no species
+    // row at all for seedLearnsets to attach moves to. Same fix, same rule:
+    // seed an isNonstandard species if it's been observed in tournament_teams.
+    const observedIds = await getObservedSpeciesIds(client);
     for (const species of Dex.species.all()) {
-      if (!species.exists || species.isNonstandard) continue;
+      if (!species.exists) continue;
+      if (species.isNonstandard && !observedIds.has(toID(species.name))) continue;
       await client.query(
         `INSERT INTO pokemon (name, num, type1, type2, hp, atk, def, spa, spd, spe,
                               ability1, ability2, ability_hidden)

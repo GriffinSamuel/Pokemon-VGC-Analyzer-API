@@ -27,6 +27,7 @@
  */
 
 const pool = require('../db/pool');
+const { Dex } = require('@pkmn/dex');
 const { effectivenessAgainst } = require('./typeChart');
 const { getMostCommonSpread, getCommonSpreads, getCommonItems, getSpeciesRow } = require('./ev_observations');
 const { damagePercentRange, effectiveSpeed, selfInflictedStatus } = require('./team_analyzer');
@@ -387,6 +388,33 @@ async function moveKnownAnywhere(moveName) {
  *               the false-negative that made the screens gate assert a
  *               Pokemon "cannot learn" a move it was observed running.
  */
+// A species can have a `pokemon` table row (real base stats, needed for
+// damage calcs) without existing anywhere in @pkmn/dex at all — the ONLY
+// confirmed case today is Floette-Eternal-Mega, a homebrew-format Mega form
+// with no real dex counterpart (Dex.species.get() silently fuzzy-matches it
+// to the unrelated Floette-Mega; Dex.species.all() never enumerates it). Such
+// a species can never legitimately get its own pokemon_moves rows — the
+// dex-driven seedLearnsets() pipeline has no entry point to reach it — so
+// `moveKnownAnywhere()` (a signal meant to distinguish "we have no data on
+// this move at all" from "the table demonstrably knows this move and still
+// excludes this species") is answering the wrong question for it: the table
+// excluding it proves nothing, since it structurally never had a chance to
+// be included. Discovered live: after Floette-Eternal (the real, dex-valid
+// BASE form, distinct from the Mega) gained its own learnset — including
+// Light of Ruin, which it legitimately has — moveKnownAnywhere('light of
+// ruin') flipped true, which would have made knowsMove('floette-eternal-mega',
+// 'light of ruin') return 'illegal' for the species that plays it 167 times
+// in real tournament data, InstaVeto-ing the exact move this fix was
+// supposed to unblock.
+const dexResolvableCache = new Map();
+function isDexResolvable(speciesName) {
+  const key = lower(speciesName);
+  if (dexResolvableCache.has(key)) return dexResolvableCache.get(key);
+  const resolvable = Dex.species.all().some((s) => s.exists && lower(s.name) === key);
+  dexResolvableCache.set(key, resolvable);
+  return resolvable;
+}
+
 async function knowsMove(speciesName, moveName) {
   const key = `${lower(speciesName)}|${lower(moveName)}`;
   if (knowsMoveCache.has(key)) return knowsMoveCache.get(key);
@@ -412,7 +440,9 @@ async function knowsMove(speciesName, moveName) {
     const { base } = baseSpeciesFallback(speciesName);
     if (base) found = await tryFetch(lower(base));
   }
-  const verdict = found ? 'legal' : ((await moveKnownAnywhere(moveName)) ? 'illegal' : 'unknown');
+  const verdict = found
+    ? 'legal'
+    : (isDexResolvable(speciesName) && (await moveKnownAnywhere(moveName))) ? 'illegal' : 'unknown';
   knowsMoveCache.set(key, verdict);
   return verdict;
 }
@@ -2151,4 +2181,7 @@ module.exports = {
   candidateProfile,
   observedOccurrences,
   MIN_LEVEL_ROWS,
+  // TASK D #1: exported for direct verification/testability of the
+  // dex-resolvability guard against a false-'illegal' verdict.
+  knowsMove,
 };

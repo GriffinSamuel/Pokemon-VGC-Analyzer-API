@@ -71,6 +71,30 @@ async function effectiveLearnsetIds(speciesName, cache) {
  *   `dropped` is dex move id -> how many species' learnsets referenced it
  *   with no matching `moves` row. Report it; do not swallow it.
  */
+// isNonstandard means "not obtainable in a fresh current-gen save" — it does
+// NOT mean "illegal in this format" (Champions Regulation M-B is a homebrew
+// format; a dex-flagged Past/Future species can still be real, played
+// tournament content here). Aegislash ('Past') and Floette-Eternal-Mega
+// ('Future', which itself only resolves via Dex.species.get()'s silent
+// fuzzy-match to the unrelated Floette-Mega — see seed_learnsets test notes)
+// were excluded from pokemon_moves regardless of real play. An isNonstandard
+// species is now seeded IF it has been observed in tournament_teams; species
+// with zero observed usage stay excluded exactly as before.
+//
+// Shared with seed.js's pokemon-table seeding step — that step had the exact
+// same gate (`if (!species.exists || species.isNonstandard) continue;`,
+// unfixed until now) as a SEPARATE copy, which is why Aegislash had no
+// `pokemon` row at all even after this file's own gate was fixed: this
+// file's fix only ever controlled `pokemon_moves`, never the species row
+// seed.js's own query needed to exist first.
+async function getObservedSpeciesIds(client) {
+  const observedResult = await client.query(`
+    SELECT DISTINCT COALESCE(p->>'normalizedName', p->>'name') AS species
+    FROM tournament_teams, jsonb_array_elements(pokemon) AS p
+  `);
+  return new Set(observedResult.rows.map((row) => toID(row.species)));
+}
+
 async function seedLearnsets(client) {
   const movesResult = await client.query('SELECT id, name FROM moves');
   const moveIdByToId = new Map();
@@ -80,20 +104,7 @@ async function seedLearnsets(client) {
   const pokemonIdByName = new Map();
   for (const row of pokemonResult.rows) pokemonIdByName.set(row.name, row.id);
 
-  // isNonstandard means "not obtainable in a fresh current-gen save" — it does
-  // NOT mean "illegal in this format" (Champions Regulation M-B is a homebrew
-  // format; a dex-flagged Past/Future species can still be real, played
-  // tournament content here). Aegislash ('Past') and Floette-Eternal-Mega
-  // ('Future', which itself only resolves via Dex.species.get()'s silent
-  // fuzzy-match to the unrelated Floette-Mega — see seed_learnsets test notes)
-  // were excluded from pokemon_moves regardless of real play. An isNonstandard
-  // species is now seeded IF it has been observed in tournament_teams; species
-  // with zero observed usage stay excluded exactly as before.
-  const observedResult = await client.query(`
-    SELECT DISTINCT COALESCE(p->>'normalizedName', p->>'name') AS species
-    FROM tournament_teams, jsonb_array_elements(pokemon) AS p
-  `);
-  const observedIds = new Set(observedResult.rows.map((row) => toID(row.species)));
+  const observedIds = await getObservedSpeciesIds(client);
 
   let inserted = 0;
   const dropped = new Map();
@@ -127,4 +138,4 @@ async function seedLearnsets(client) {
   return { inserted, dropped };
 }
 
-module.exports = { seedLearnsets };
+module.exports = { seedLearnsets, getObservedSpeciesIds };
