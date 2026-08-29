@@ -1188,6 +1188,9 @@ function buildTeamBuildText(responseBody, team) {
     lines.push(`  Our key Pokemon: ${(m.our_key_pokemon || []).join(', ')}`);
 
     lines.push('  Key Threats:');
+    if ((m.key_threats_skipped_for_missing_species || []).length > 0) {
+      lines.push(`    (${m.key_threats_skipped_for_missing_species.length} usage-qualified species skipped — no pokemon table row: ${m.key_threats_skipped_for_missing_species.join(', ')})`);
+    }
     for (const t of m.key_threats || []) {
       const speed = t.speed != null ? `${t.speed} Spe` : 'Speed unknown';
       lines.push(`    - ${t.pokemon} (${t.types.join('/')}, ${(t.usage * 100).toFixed(1)}% of ${m.archetype} teams, ${speed}${t.ability ? `, ${t.ability}` : ''}${t.item ? `, ${t.item}` : ''})`);

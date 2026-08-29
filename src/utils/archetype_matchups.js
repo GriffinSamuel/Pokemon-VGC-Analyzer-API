@@ -38,7 +38,7 @@ const { getMostCommonSpread, getCommonSpreads, getCommonItems, getSpeciesRow } =
 const {
   damagePercentRange, effectiveSpeed, typesOf, selfInflictedStatus,
 } = require('./team_analyzer');
-const { buildSwaps, teamValueOf } = require('./archetype_swaps');
+const { buildSwaps, teamValueOf, candidateProfile } = require('./archetype_swaps');
 const {
   WEATHER_ABILITY, WEATHER_MOVE, WEATHER_ARCHETYPE, TRICK_ROOM_ARCHETYPE, HYPER_OFFENSE_ARCHETYPE,
   ALL_ARCHETYPES, tagsForTeam,
@@ -104,28 +104,25 @@ async function buildArchetypeMeta() {
     }
   }
 
-  const topOf = (map) => [...map.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || null;
-  // tournament_teams records the BASE form's ability for Mega Pokemon
-  // (species_key() falls back), so Swampert-Mega came through as Torrent and
-  // Charizard-Mega-Y as Blaze. A Mega's ability is fixed by the form, so the
-  // pokemon table is authoritative and the scraped value is simply wrong.
-  const megaAbility = new Map();
-  for (const bucket of Object.values(meta)) {
-    for (const entry of bucket.members.values()) {
-      if (!/-mega/i.test(entry.name) || megaAbility.has(lower(entry.name))) continue;
-      const row = await getSpeciesRow(lower(entry.name)).catch(() => null);
-      megaAbility.set(lower(entry.name), row?.ability1 || null);
-    }
-  }
+  // TASK D #2: this used to pick top_ability/top_item/top_moves via three
+  // INDEPENDENT argmaxes over the abilities/items/moves Maps accumulated
+  // above (plus a bolted-on Mega-ability correction) — the exact same defect
+  // class candidateProfile() (archetype_swaps.js) was fixed for: an item
+  // welded to a moveset from a different real build, because nothing
+  // required the choices to agree. Delegating to candidateProfile() per
+  // (species, archetype) gets the staged, conditional composition (item ->
+  // moves/ability -> spread, over a pool that widens teammate-matched ->
+  // same-archetype -> all-observed) instead, AND its Mega-ability fix (added
+  // alongside this change, once, so both call sites share one fix instead of
+  // this file's now-redundant local megaAbility pass).
   for (const bucket of Object.values(meta)) {
     for (const entry of bucket.members.values()) {
       entry.usage = bucket.team_count > 0 ? entry.count / bucket.team_count : 0;
-      entry.top_ability = megaAbility.get(lower(entry.name)) || topOf(entry.abilities);
-      entry.top_item = topOf(entry.items);
-      entry.top_moves = [...entry.moves.entries()]
-        .sort((a, b) => b[1] - a[1])
-        .slice(0, 4)
-        .map(([move, count]) => ({ move, frequency: entry.count > 0 ? count / entry.count : 0 }));
+      const profile = await candidateProfile(entry.name, { archetype: bucket.archetype });
+      entry.top_ability = profile?.ability || null;
+      entry.top_item = profile?.item || null;
+      entry.top_moves = (profile?.moves || []).map((m) => ({ move: m.move, frequency: m.frequency }));
+      entry.provenance = profile?.provenance || null;
     }
   }
   return meta;
@@ -703,9 +700,16 @@ async function buildKeyThreats(bucket, ourKeys, weather, weathers) {
     .slice(0, THREAT_POOL_SIZE);
 
   const threats = [];
+  // TASK D #3: a candidate this archetype-usage-qualified but with no
+  // `pokemon` table row (23 of 220 observed species — see
+  // scripts/check_missing_species.js) was previously dropped by the bare
+  // `continue` below with no trace anywhere in the output. Counted and named
+  // instead of silently omitted, per the owner's explicit "a noisier report
+  // is acceptable — silent omission is not."
+  const skippedForMissingSpecies = [];
   for (const entry of candidates) {
     const row = await getSpeciesCached(lower(entry.name));
-    if (!row) continue;
+    if (!row) { skippedForMissingSpecies.push(entry.name); continue; }
     const entryTypes = [row.type1, row.type2].filter(Boolean);
 
     let damagingMoves = 0;
@@ -809,7 +813,13 @@ async function buildKeyThreats(bucket, ourKeys, weather, weathers) {
   }
 
   threats.sort((a, b) => b.usage - a.usage);
-  return threats.slice(0, 6);
+  const result = threats.slice(0, 6);
+  // Attached to the array rather than changing the return shape to
+  // {threats, skipped} — every existing caller treats this as a plain array
+  // (.length, .filter, .map, spreads it straight into key_threats), and an
+  // array is still an object: this rides along without touching any of that.
+  result.skipped_for_missing_species = skippedForMissingSpecies;
+  return result;
 }
 
 // --- RESISTANCES -------------------------------------------------------------
@@ -1683,6 +1693,7 @@ async function analyzeArchetypeMatchupsLive(team, weatherAnalysis, synergies, le
       meta_team_count: bucket.team_count,
       our_key_pokemon: ourKeys.map((m) => m.pokemon),
       key_threats: threats,
+      key_threats_skipped_for_missing_species: threats.skipped_for_missing_species || [],
       resistances,
       counters,
       ...conditions,

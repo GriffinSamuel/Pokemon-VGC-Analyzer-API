@@ -1102,13 +1102,25 @@ async function candidateProfile(name, context = {}) {
   if (!row) { candidateProfileCache.set(cacheKey, null); return null; }
 
   const composed = await composeFromLadder(key, archetype, teamSpeciesSet);
+  // TASK D #2 investigation turned up a related gap here: tournament_teams
+  // records a Mega form's BASE form's ability (species_key() falls back for
+  // Megas at scrape time), not the Mega's own fixed ability — Charizard-Mega-Y
+  // recorded as Blaze instead of Drought, Swampert-Mega as Torrent instead of
+  // Damp, etc. archetype_matchups.js's buildArchetypeMeta() already corrects
+  // this (its own megaAbility pass, `row.ability1` wins for any `-mega` name);
+  // composeFromLadder's ability argmax had no equivalent, so the same
+  // recurring "answers a narrower/wrong question" defect applied here too — a
+  // Mega form's composed ability would have silently been its base form's.
+  // A Mega's ability is fixed by the form, so the pokemon table (`row`) is
+  // authoritative over any scraped value regardless of what the ladder found.
+  const isMega = /-mega/i.test(key);
   const profile = {
     name: row.name,
     row,
     types: [row.type1, row.type2].filter(Boolean),
     spread: composed?.spread || null,
     item: composed?.item || '',
-    ability: composed?.ability || row.ability1 || null,
+    ability: isMega ? (row.ability1 || null) : (composed?.ability || row.ability1 || null),
     moves: composed?.moves || [],
     provenance: composed?.provenance || null,
   };
