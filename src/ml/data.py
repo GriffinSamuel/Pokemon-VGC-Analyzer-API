@@ -57,6 +57,31 @@ def species_key(mon):
     return (mon.get("id") or mon.get("name") or "").lower()
 
 
+def resolve_base_key(mon, species):
+    """The `pokemon` species-table key for a scraped entry, or None if neither
+    candidate resolves.
+
+    Tries `species_key(mon)` (id-preferred) first, then falls back to a
+    name-derived key. The fallback matters: 467 tournament_teams entries across
+    60+ distinct species (verified live) carry a bare gender letter ("f"/"m")
+    in `id` instead of a real species id — a scraper artifact — so id-only
+    lookup silently drops every one of those real, played entries from every
+    appearance count built on top of this function's callers (move
+    prevalence, EV role inference, ability synergy). `name` doesn't have this
+    failure mode for the affected rows (verified: Tinkaton's 2 "f"-id rows
+    both carry name="Tinkaton"), which is why total_appearances undercounted
+    Tinkaton at 8 instead of the true 10, landing it below the 10-appearance
+    /api/recommend/moves gate entirely.
+    """
+    key = species_key(mon)
+    if key in species:
+        return key
+    name_key = (mon.get("name") or "").lower()
+    if name_key in species:
+        return name_key
+    return None
+
+
 def species_identity_key(mon, species):
     """(key, display_name) for a scraped Pokemon entry, preferring its Mega/regional
     identity over its base form — or None if the entry doesn't match any real species
@@ -65,7 +90,7 @@ def species_identity_key(mon, species):
     Mirrors train_synergy.py's own `team_pokemon_identity()` (that file keeps its own
     local copy rather than importing this — see its docstring — this version exists so
     train_moves.py can use the same, already-correct pattern without duplicating it a
-    third time). Validity is checked via the BASE `species_key()` against the `pokemon`
+    third time). Validity is checked via `resolve_base_key()` against the `pokemon`
     species table, since that's the only reliable existence check available — the table
     has zero "-Mega" rows, so checking membership using the *normalized* name would
     reject every Mega entry outright. Once that base check passes, `normalizedName`
@@ -74,8 +99,8 @@ def species_identity_key(mon, species):
     is tracked separately from its base form's instead of being silently blended
     together under one shared species_key() bucket.
     """
-    base_key = species_key(mon)
-    if base_key not in species:
+    base_key = resolve_base_key(mon, species)
+    if base_key is None:
         return None
     normalized = (mon.get("normalizedName") or "").strip()
     if normalized:

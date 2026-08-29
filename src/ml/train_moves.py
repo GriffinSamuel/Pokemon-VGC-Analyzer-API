@@ -7,7 +7,7 @@ from sklearn.metrics import accuracy_score, top_k_accuracy_score
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder
 
-from data import load_pokemon_species, load_tournament_teams, load_winning_teams, species_key, species_identity_key, unique_attacks
+from data import load_pokemon_species, load_tournament_teams, load_winning_teams, species_identity_key, resolve_base_key, unique_attacks
 from features import (
     FEATURE_NAMES,
     build_pokemon_feature_vector,
@@ -49,9 +49,9 @@ def build_dataset(species, teams, item_vocab, ability_vocab):
         mons = team["pokemon"] or []
         rows_by_index = {}
         for i, mon in enumerate(mons):
-            row = species.get(species_key(mon))
-            if row is not None:
-                rows_by_index[i] = row
+            key = resolve_base_key(mon, species)
+            if key is not None:
+                rows_by_index[i] = species[key]
 
         for i, mon in enumerate(mons):
             row = rows_by_index.get(i)

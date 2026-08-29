@@ -4,7 +4,7 @@ import sys
 from collections import Counter
 from itertools import combinations
 
-from data import load_abilities, load_pokemon_species, load_tournament_teams, species_key
+from data import load_abilities, load_pokemon_species, load_tournament_teams, resolve_base_key
 from registry import MODELS_DIR, save_synergy_matrix
 
 MIN_COOCCURRENCE = 5
@@ -55,14 +55,15 @@ def team_pokemon_identity(mon, species):
     Swampertite -> "Swampert-Mega", set by normalize.js) is tracked as a distinct
     identity from its base form instead of folding together.
 
-    Validity is still checked via the base id/name against the `pokemon` species
-    table, since that's the only reliable existence check available: the table has
-    zero "-Mega" rows, so checking membership using the *normalized* name would
-    reject every Mega entry outright. The normalized name is only substituted in
-    for identity/display after that base check passes.
+    Validity is still checked via `resolve_base_key()` (id-then-name fallback —
+    see data.py) against the `pokemon` species table, since that's the only
+    reliable existence check available: the table has zero "-Mega" rows, so
+    checking membership using the *normalized* name would reject every Mega
+    entry outright. The normalized name is only substituted in for
+    identity/display after that base check passes.
     """
-    base_key = species_key(mon)
-    if base_key not in species:
+    base_key = resolve_base_key(mon, species)
+    if base_key is None:
         return None
     normalized = (mon.get("normalizedName") or "").strip()
     if normalized:

@@ -7,7 +7,7 @@ from sklearn.metrics import accuracy_score
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder
 
-from data import load_moves, load_pokemon_species, load_winning_teams, species_key, unique_attacks
+from data import load_moves, load_pokemon_species, load_winning_teams, resolve_base_key, unique_attacks
 from features import FEATURE_NAMES, NATURE_MODIFIERS, build_pokemon_feature_vector
 from registry import MODELS_DIR, save_ev_model
 
@@ -102,10 +102,10 @@ def build_role_dataset(species, moves, teams):
 
     for team in teams:
         for mon in team["pokemon"] or []:
-            name = species_key(mon)
-            row = species.get(name)
-            if row is None:
+            name = resolve_base_key(mon, species)
+            if name is None:
                 continue
+            row = species[name]
             role = infer_role(row, mon.get("nature"), unique_attacks(mon), moves)
             X.append(build_pokemon_feature_vector(row))
             y.append(role)

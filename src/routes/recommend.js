@@ -39,12 +39,19 @@ function extractTeammates(query) {
     .filter(Boolean);
 }
 
-// Prefer the Showdown `id` field over `name`: `name` is a display string that can
-// carry gender symbols the species table doesn't use (e.g. "Basculegion ♀" vs the
-// table's "Basculegion-F"), while `id` ("basculegion-f") already matches it. Mirrors
-// data.py's species_key() on the Python training side.
+// Prefer `normalizedName` (set by normalize.js at scrape time, e.g. "Raichu" +
+// Raichunite Y -> "Raichu-Mega-Y") over the raw Showdown `id`/`name` fields —
+// it's already the corrected, canonical identity for every scraped entry,
+// including the ~467 tournament_teams rows (60+ distinct species, verified
+// live) where the scraper captured a bare gender letter ("f"/"m") in `id`
+// instead of a real species id. `id` alone (the data.py mirror this function
+// used to have) silently drops every one of those real, played entries from
+// this contextual match — the exact bug that undercounted Tinkaton's real
+// appearances (see resolve_base_key() in src/ml/data.py for the training-side
+// fix of the same defect). `id` then `name` remain as fallbacks for the rare
+// row scraped before normalizedName existed.
 function speciesKey(mon) {
-  return (mon.id || mon.name || '').toLowerCase();
+  return (mon.normalizedName || mon.id || mon.name || '').toLowerCase();
 }
 
 // Live contextual prevalence: only run when the caller supplies teammates, since
