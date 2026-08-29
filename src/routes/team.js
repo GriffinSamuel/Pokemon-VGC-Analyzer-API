@@ -10,20 +10,21 @@ const {
   getScoredCandidateItems, resolveItemConflicts, buildItemSpNotes,
   getRealAbilityFrequency, detectTeamWeatherContext, resolveRealAbility,
   isConditionalSpeedAbility, conditionalSpeedAbilityWeather,
-  WEATHER_SETTER_ABILITIES, isDamageBoostingItem,
+  WEATHER_SETTER_ABILITIES, isDamageBoostingItem, getGlobalItemFrequency,
 } = require('../utils/item_optimizer');
 const { getOrComputeEvolutionarySpread } = require('../utils/ev_optimizer');
-const { determineLockedIndices } = require('../utils/spread_optimizer');
+const { evaluateItemValue } = require('../utils/item_value_eval');
 const { getNerdOfNowSets } = require('../utils/nerd_of_now');
 const { getMoveData } = require('../utils/nerd_of_now_calc');
 const { round } = require('../utils/format');
-const { STAT_ORDER, STAT_INDEX } = require('../utils/stat_formula');
+const { STAT_ORDER } = require('../utils/stat_formula');
 const {
   getTypeMetaData, analyzeCoverage, analyzeSynergies, analyzeWeather,
   analyzeTrickRoom, analyzeSpeedTiers, analyzeWeaknesses, analyzeArchetypeMatchups,
   analyzeMatchups, getLegalPokemonSet, suggestCoverageReplacements,
 } = require('../utils/team_analyzer');
 const { analyzeArchetypeMatchupsLive } = require('../utils/archetype_matchups');
+const { checkSpeciesLegality } = require('../config/format_legality');
 const fs = require('fs');
 const path = require('path');
 
@@ -454,13 +455,33 @@ function generateItemReason(assignment, ability, teamWeatherContext) {
   var result;
   if (assignment.source === "generic_fallback") {
     result = base + " (Generic fallback — this Pokemon's real observed candidates were all claimed by higher-priority teammates.)";
-  } else if (assignment.source && assignment.source.endsWith("_coherence_reassigned")) {
-    // TASK C: the role-based pick was a damage-boosting item, but the actual
-    // spread search found no threat that justified investing in the stat it
-    // would have boosted — that item's cost (recoil, or simply an opportunity
-    // cost vs. a defensive slot) bought nothing, so a coherent item was
-    // substituted instead.
-    result = base + " (Reassigned from a damage-boosting item — this build's optimized spread invests nothing in the corresponding offensive stat, so that item's cost would have bought nothing.)";
+  } else if (assignment.source && (assignment.source.endsWith("_value_kept") || assignment.source.endsWith("_value_reassigned"))) {
+    // Item-value reconciliation: a genuine benefit-vs-cost measurement against
+    // the best real alternative's OWN independently-optimized spread (see
+    // item_value_eval.js) — never SP allocation. Surfaces exactly what was
+    // measured so the judgment is auditable, per product-language requirement.
+    var ve = assignment.value_eval || {};
+    var topGain = (ve.incumbent_gains || []).slice().sort(function (a, b) { return b.contribution - a.contribution; })[0];
+    var topFlip = (ve.cost_detail && ve.cost_detail.flipped || []).slice().sort(function (a, b) { return b.contribution - a.contribution; })[0];
+    var benefitText = topGain
+      ? "reaches " + topGain.this_spread_ko + " on " + topGain.target + (topGain.target_usage_percent != null ? " (" + topGain.target_usage_percent + "% usage)" : "") + " that " + (assignment.value_alt_item || assignment.value_prior_item || "the alternative") + " does not"
+      : "gains no offensive KO the alternative doesn't already reach";
+    var costText;
+    if (ve.cost_detail && ve.cost_detail.type === "life_orb_recoil") {
+      costText = topFlip
+        ? "recoil costs the survival threshold vs. " + (topFlip.attacker_name || topFlip.threat) + " (" + topFlip.from_tier + " -> " + topFlip.to_tier + ")"
+        : "recoil costs no survival threshold";
+    } else if (ve.cost_detail && ve.cost_detail.type === "choice_lock") {
+      var foregone = (ve.cost_detail.foregone || []).map(function (f) { return f.move; }).join(", ");
+      costText = "locks out " + (foregone || "the other real observed moves") + " (locked into " + (ve.cost_detail.locked_move || "its top move") + ")";
+    } else {
+      costText = "no modeled cost for this item";
+    }
+    if (assignment.source.endsWith("_value_kept")) {
+      result = base + " (Kept over " + (assignment.value_alt_item || "the alternative") + " — " + benefitText + "; " + costText + ". Net " + ve.net + " = benefit " + ve.benefit + " - cost " + ve.cost + ".)";
+    } else {
+      result = base + " (Reassigned from " + (assignment.value_prior_item || "a damage-boosting item") + " — " + benefitText + "; " + costText + ". Net " + ve.net + " = benefit " + ve.benefit + " - cost " + ve.cost + " did not clear the meaningful-difference threshold.)";
+    }
   } else if (assignment.next_best) {
     var loss = round(assignment.score - assignment.next_best.score, 3);
     var baseTrimmed = base.replace(/\.\s*$/, "");
@@ -1598,9 +1619,19 @@ router.post('/build', async (req, res, next) => {
     }
 
     // Validate every name up front — 400 with the specific missing name, before
-    // any of the expensive pipeline work below runs.
+    // any of the expensive pipeline work below runs. Species existing in the
+    // `pokemon` table (real base stats from the dex) is a DIFFERENT question
+    // from whether that species is legal in Champions Regulation M-B — see
+    // format_legality.js's own header for why "zero observed rows" can't be
+    // used to answer the second question (Tinkaton has real rows and 10
+    // observed appearances; a legal-but-unpopular species would have real
+    // rows and 0 appearances and must still build).
     const pokemonRowsByLower = {};
     for (const name of teamNames) {
+      const legality = checkSpeciesLegality(name);
+      if (!legality.legal) {
+        return res.status(400).json({ error: `${name} is not legal in this format`, reason: legality.reason });
+      }
       const { rows } = await pool.query('SELECT * FROM pokemon WHERE LOWER(name) = LOWER($1)', [String(name)]);
       if (rows.length === 0) return res.status(400).json({ error: `Pokemon not found: ${name}` });
       pokemonRowsByLower[String(name).toLowerCase()] = rows[0];
@@ -1671,7 +1702,8 @@ router.post('/build', async (req, res, next) => {
       const candidates = await getScoredCandidateItems(pokemonRow, role, { isWeatherAbuser, teamWeatherContext });
       return { pokemon: name, role, pokemonRow, candidates, isWeatherAbuser };
     }));
-    const itemAssignments = resolveItemConflicts(teamCandidates);
+    const globalItemFrequency = await getGlobalItemFrequency();
+    const itemAssignments = resolveItemConflicts(teamCandidates, globalItemFrequency);
     const itemByPokemon = Object.fromEntries(itemAssignments.map((a) => [a.pokemon, a]));
 
     // STEP 5: item-aware evolutionary EV optimization, all 6 Pokemon in parallel.
@@ -1688,7 +1720,7 @@ router.post('/build', async (req, res, next) => {
     // Chlorophyll inherits Sun, not the team's first-listed Rain), (3) the team's
     // first active weather. _teamContext still carries every team weather so the
     // detailed pass surfaces each alternative separately. Factored out so the
-    // TASK C reconciliation pass below can recompute a spread against a
+    // item-value reconciliation pass below can recompute a spread against a
     // reassigned item using the exact same weather resolution.
     function fieldOptsForMember(i) {
       const ability = finalAbilities[i];
@@ -1705,53 +1737,84 @@ router.post('/build', async (req, res, next) => {
       return getOrComputeEvolutionarySpread(name, { item, teamBuild: true, fieldOpts: fieldOptsForMember(i) });
     }));
 
-    // TASK C — item/spread coherence reconciliation. `itemByPokemon` was
-    // chosen (STEP 3+4, above) from ROLE ALONE, before the spread existed —
-    // itemRoleFit()/itemCoherencePenalty() (item_optimizer.js) can only see a
-    // role LABEL, not what the real threat-driven GA search will actually
-    // invest. A role that nominally permits offensive investment
-    // (slow_bulky_offense, fast_offense) can still legitimately land on 0 SP
-    // in the corresponding stat if no real threat justifies it — and a
-    // damage-boosting item is incoherent with that outcome regardless of what
-    // the role label promised: e.g. Life Orb's 10% max-HP recoil per hit is
-    // pure downside when nothing is being invested to make use of its bonus.
-    // (slow_bulky_support is exempt — itemCoherencePenalty already discounts
-    // damage items there at scoring time, and both offensive stats are
-    // hard-locked to 0 by design, not a spread-search finding.)
+    // Item-value reconciliation. Replaces the SP-allocation proxy check the
+    // owner rejected ("there isn't anything inherently wrong even if there is
+    // no SP allocation into attacking stats, that's a hard code, something I
+    // don't want") — 0 SP invested in the corresponding offensive stat does
+    // NOT mean a damage-boosting item bought nothing: a flat multiplier like
+    // Life Orb's 1.3x still applies to whatever the Pokemon's BASE stat
+    // already deals, and can push a real threshold over on its own.
+    //
+    // What this checks instead, per member holding a damage-boosting item:
+    // does the item's own measured BENEFIT (usage-weighted offensive KOs its
+    // OWN optimized spread reaches that the best alternative item's OWN
+    // optimized spread — a genuine counterfactual, not the incumbent's spread
+    // re-scored — does not) exceed its own measured COST (Life Orb: recoil's
+    // usage-weighted cost in survival thresholds; Choice Band/Specs:
+    // observed-confidence-weighted cost of the 3 moves locked out; every
+    // other damage item: no concrete cost model, so cost is 0 and the
+    // question reduces to "did it gain anything real")? See
+    // item_value_eval.js for the full model. No role label ever gates
+    // whether a member is checked — every damage-boosting-item holder is
+    // evaluated the same way, including slow_bulky_support, where the
+    // benefit will naturally come out near 0 since both offensive stats are
+    // locked (that's the general test working correctly, not a role-specific
+    // rule).
+    //
+    // MEANINGFUL_NET_THRESHOLD calibration and reassignment counts vs.
+    // b3a7d3d/pre-77d52b0 are reported in the session write-up alongside a
+    // stricter/looser sensitivity comparison, per the brief's requirement #6.
+    const MEANINGFUL_NET_THRESHOLD = 0.05;
     const usedItemsLower = new Set(itemAssignments.map((a) => a.item.toLowerCase()));
-    const coherenceReassignments = [];
+    const itemValueReassignments = [];
     for (let i = 0; i < teamNames.length; i++) {
       const name = teamNames[i];
       const role = roleResults[i].role;
-      if (role === 'slow_bulky_support') continue;
       const assignment = itemByPokemon[name];
       if (!isDamageBoostingItem(assignment.item)) continue;
-
-      const pokemonRow = pokemonRowsByLower[name.toLowerCase()];
-      const lockedIndices = determineLockedIndices(role, pokemonRow);
-      const primaryOffKey = lockedIndices.has(STAT_INDEX.atk) ? 'spa' : 'atk';
-      const spOff = evoResults[i]?.result?.spreads?.[0]?.sp?.[primaryOffKey] || 0;
-      if (spOff > 0) continue; // coherent: the item's bonus is actually being used
 
       const candidate = teamCandidates[i];
       const replacement = candidate.candidates.find((c) =>
         !isDamageBoostingItem(c.item) && !usedItemsLower.has(c.item.toLowerCase()));
       if (!replacement) {
-        coherenceReassignments.push(`${name}: kept ${assignment.item} despite 0 ${primaryOffKey.toUpperCase()} SP invested — no non-damage-boosting candidate available without a team item conflict`);
+        itemValueReassignments.push(`${name}: kept ${assignment.item} — no non-damage-boosting candidate available without a team item conflict, so no counterfactual to compare against`);
         continue;
       }
 
-      usedItemsLower.delete(assignment.item.toLowerCase());
-      usedItemsLower.add(replacement.item.toLowerCase());
-      itemByPokemon[name] = { ...assignment, item: replacement.item, score: replacement.score, role_fit: replacement.role_fit, source: `${replacement.source || 'observed'}_coherence_reassigned` };
-      // Spread must be recomputed against the new item — a defensive item can
-      // shift which breakpoints are worth reaching (e.g. Assault Vest's own
-      // direct SpD bump), so the previous evoResults entry no longer applies.
-      evoResults[i] = await getOrComputeEvolutionarySpread(name, { item: replacement.item, teamBuild: true, fieldOpts: fieldOptsForMember(i) });
-      coherenceReassignments.push(`${name}: reassigned ${assignment.item} -> ${replacement.item} (0 ${primaryOffKey.toUpperCase()} SP invested; the item's damage bonus was not being used)`);
+      // Genuine counterfactual: the alternative gets its OWN GA search, not a
+      // re-score of the incumbent's spread — a defensive item can shift which
+      // breakpoints are worth reaching (e.g. Assault Vest's own SpD bump), so
+      // scoring it against the incumbent's spread would bias toward whichever
+      // item was chosen first.
+      const altEvo = await getOrComputeEvolutionarySpread(name, { item: replacement.item, teamBuild: true, fieldOpts: fieldOptsForMember(i) });
+      const incumbentThresholds = evoResults[i]?.result?.spreads?.[0]?.thresholds_met || [];
+      const altThresholds = altEvo?.result?.spreads?.[0]?.thresholds_met || [];
+      const evalResult = evaluateItemValue({
+        itemName: assignment.item,
+        incumbentThresholds,
+        altThresholds,
+        moveRecommendations: moveResults[i]?.recommendations || [],
+      });
+
+      const topGain = evalResult.incumbent_gains.slice().sort((a, b) => b.contribution - a.contribution)[0] || null;
+      const topFlip = evalResult.cost_detail?.flipped?.slice().sort((a, b) => b.contribution - a.contribution)[0] || null;
+      const evalLog = { pokemon: name, role, item: assignment.item, alt_item: replacement.item, benefit: evalResult.benefit, cost: evalResult.cost, net: evalResult.net, threshold: MEANINGFUL_NET_THRESHOLD, top_gain: topGain?.target || null, top_cost: topFlip?.threat || null };
+
+      if (evalResult.net > MEANINGFUL_NET_THRESHOLD) {
+        itemByPokemon[name] = { ...assignment, source: `${assignment.source || 'observed'}_value_kept`, value_eval: evalResult, value_alt_item: replacement.item };
+        itemValueReassignments.push(`${name}: kept ${assignment.item} (net ${evalResult.net} = benefit ${evalResult.benefit} - cost ${evalResult.cost}, vs. ${replacement.item})`);
+        logger.info('item value evaluation — kept', evalLog);
+      } else {
+        usedItemsLower.delete(assignment.item.toLowerCase());
+        usedItemsLower.add(replacement.item.toLowerCase());
+        itemByPokemon[name] = { ...assignment, item: replacement.item, score: replacement.score, role_fit: replacement.role_fit, source: `${replacement.source || 'observed'}_value_reassigned`, value_eval: evalResult, value_prior_item: assignment.item };
+        evoResults[i] = altEvo;
+        itemValueReassignments.push(`${name}: reassigned ${assignment.item} -> ${replacement.item} (net ${evalResult.net} = benefit ${evalResult.benefit} - cost ${evalResult.cost})`);
+        logger.info('item value evaluation — reassigned', evalLog);
+      }
     }
-    if (coherenceReassignments.length > 0) {
-      logger.info('TASK C item/spread coherence reconciliation', { changes: coherenceReassignments });
+    if (itemValueReassignments.length > 0) {
+      logger.info('item value reconciliation summary', { changes: itemValueReassignments });
     }
 
     // FIX 1: Pre-compute base abilities for Mega Pokemon (outside the .map() loop
