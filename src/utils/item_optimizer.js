@@ -37,6 +37,17 @@ function itemCoherencePenalty(itemName, role) {
   if (role === 'slow_bulky_support') return 0.5;
   return 1.0;
 }
+
+// TASK C: exposed so routes/team.js can reconcile item choice against what
+// the spread search ACTUALLY invested — itemRoleFit/itemCoherencePenalty
+// above only know the Pokemon's ROLE LABEL at item-selection time (before the
+// spread exists), so a role that nominally allows offensive investment
+// (slow_bulky_offense, fast_offense) can still legitimately end up investing
+// 0 in the corresponding stat once the real threat-driven minimization runs.
+// A damage-boosting item is incoherent with that outcome regardless of role.
+function isDamageBoostingItem(itemName) {
+  return DAMAGE_BOOSTING_ITEMS.has((itemName || '').toLowerCase());
+}
 const GENERIC_FALLBACK_BY_ROLE = {
   fast_offense: ['Life Orb', 'Choice Scarf', 'Choice Band', 'Choice Specs', 'Focus Sash'],
   slow_bulky_offense: ['Leftovers', 'Assault Vest', 'Life Orb', 'Rocky Helmet'],
@@ -429,4 +440,5 @@ module.exports = {
   CONDITION_REQUIRING_ABILITIES,
   OFFENSIVE_ROLES,
   BULKY_ROLES,
+  isDamageBoostingItem,
 };

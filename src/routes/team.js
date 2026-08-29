@@ -10,13 +10,14 @@ const {
   getScoredCandidateItems, resolveItemConflicts, buildItemSpNotes,
   getRealAbilityFrequency, detectTeamWeatherContext, resolveRealAbility,
   isConditionalSpeedAbility, conditionalSpeedAbilityWeather,
-  WEATHER_SETTER_ABILITIES,
+  WEATHER_SETTER_ABILITIES, isDamageBoostingItem,
 } = require('../utils/item_optimizer');
 const { getOrComputeEvolutionarySpread } = require('../utils/ev_optimizer');
+const { determineLockedIndices } = require('../utils/spread_optimizer');
 const { getNerdOfNowSets } = require('../utils/nerd_of_now');
 const { getMoveData } = require('../utils/nerd_of_now_calc');
 const { round } = require('../utils/format');
-const { STAT_ORDER } = require('../utils/stat_formula');
+const { STAT_ORDER, STAT_INDEX } = require('../utils/stat_formula');
 const {
   getTypeMetaData, analyzeCoverage, analyzeSynergies, analyzeWeather,
   analyzeTrickRoom, analyzeSpeedTiers, analyzeWeaknesses, analyzeArchetypeMatchups,
@@ -453,6 +454,13 @@ function generateItemReason(assignment, ability, teamWeatherContext) {
   var result;
   if (assignment.source === "generic_fallback") {
     result = base + " (Generic fallback — this Pokemon's real observed candidates were all claimed by higher-priority teammates.)";
+  } else if (assignment.source && assignment.source.endsWith("_coherence_reassigned")) {
+    // TASK C: the role-based pick was a damage-boosting item, but the actual
+    // spread search found no threat that justified investing in the stat it
+    // would have boosted — that item's cost (recoil, or simply an opportunity
+    // cost vs. a defensive slot) bought nothing, so a coherent item was
+    // substituted instead.
+    result = base + " (Reassigned from a damage-boosting item — this build's optimized spread invests nothing in the corresponding offensive stat, so that item's cost would have bought nothing.)";
   } else if (assignment.next_best) {
     var loss = round(assignment.score - assignment.next_best.score, 3);
     var baseTrimmed = base.replace(/\.\s*$/, "");
@@ -1671,23 +1679,77 @@ router.post('/build', async (req, res, next) => {
     // weathers) is passed alongside so scoreSpread's detailed pass can compute
     // alternative-weather damage for the Why-block display.
     const teamWeathersForContext = [...teamWeatherContext];
-    const evoResults = await Promise.all(teamNames.map((name, i) => {
-      const item = itemByPokemon[name].item;
+    // Non-setters inherit team weather so weather-dependent calcs reflect real
+    // team conditions. Priority: (1) own weather-setting ability, (2) the weather
+    // a weather-requiring ability thrives in when the team has it (e.g. Venusaur
+    // Chlorophyll inherits Sun, not the team's first-listed Rain), (3) the team's
+    // first active weather. _teamContext still carries every team weather so the
+    // detailed pass surfaces each alternative separately. Factored out so the
+    // TASK C reconciliation pass below can recompute a spread against a
+    // reassigned item using the exact same weather resolution.
+    function fieldOptsForMember(i) {
       const ability = finalAbilities[i];
       const abilityWeather = WEATHER_SETTER_ABILITIES[(ability || '').toLowerCase()];
-      // Non-setters inherit team weather so weather-dependent calcs reflect real
-      // team conditions. Priority: (1) own weather-setting ability, (2) the weather
-      // a weather-requiring ability thrives in when the team has it (e.g. Venusaur
-      // Chlorophyll inherits Sun, not the team's first-listed Rain), (3) the team's
-      // first active weather. _teamContext still carries every team weather so the
-      // detailed pass surfaces each alternative separately.
       const requiredWeather = conditionalSpeedAbilityWeather(ability);
       const requiredInTeam = requiredWeather && teamWeatherContext.has(requiredWeather);
       const inheritedWeather = abilityWeather
         || (requiredInTeam ? requiredWeather : (teamWeathersForContext.length > 0 ? teamWeathersForContext[0] : null));
-      const fieldOpts = { weather: inheritedWeather || null, _teamContext: teamWeathersForContext };
-      return getOrComputeEvolutionarySpread(name, { item, teamBuild: true, fieldOpts });
+      return { weather: inheritedWeather || null, _teamContext: teamWeathersForContext };
+    }
+
+    const evoResults = await Promise.all(teamNames.map((name, i) => {
+      const item = itemByPokemon[name].item;
+      return getOrComputeEvolutionarySpread(name, { item, teamBuild: true, fieldOpts: fieldOptsForMember(i) });
     }));
+
+    // TASK C — item/spread coherence reconciliation. `itemByPokemon` was
+    // chosen (STEP 3+4, above) from ROLE ALONE, before the spread existed —
+    // itemRoleFit()/itemCoherencePenalty() (item_optimizer.js) can only see a
+    // role LABEL, not what the real threat-driven GA search will actually
+    // invest. A role that nominally permits offensive investment
+    // (slow_bulky_offense, fast_offense) can still legitimately land on 0 SP
+    // in the corresponding stat if no real threat justifies it — and a
+    // damage-boosting item is incoherent with that outcome regardless of what
+    // the role label promised: e.g. Life Orb's 10% max-HP recoil per hit is
+    // pure downside when nothing is being invested to make use of its bonus.
+    // (slow_bulky_support is exempt — itemCoherencePenalty already discounts
+    // damage items there at scoring time, and both offensive stats are
+    // hard-locked to 0 by design, not a spread-search finding.)
+    const usedItemsLower = new Set(itemAssignments.map((a) => a.item.toLowerCase()));
+    const coherenceReassignments = [];
+    for (let i = 0; i < teamNames.length; i++) {
+      const name = teamNames[i];
+      const role = roleResults[i].role;
+      if (role === 'slow_bulky_support') continue;
+      const assignment = itemByPokemon[name];
+      if (!isDamageBoostingItem(assignment.item)) continue;
+
+      const pokemonRow = pokemonRowsByLower[name.toLowerCase()];
+      const lockedIndices = determineLockedIndices(role, pokemonRow);
+      const primaryOffKey = lockedIndices.has(STAT_INDEX.atk) ? 'spa' : 'atk';
+      const spOff = evoResults[i]?.result?.spreads?.[0]?.sp?.[primaryOffKey] || 0;
+      if (spOff > 0) continue; // coherent: the item's bonus is actually being used
+
+      const candidate = teamCandidates[i];
+      const replacement = candidate.candidates.find((c) =>
+        !isDamageBoostingItem(c.item) && !usedItemsLower.has(c.item.toLowerCase()));
+      if (!replacement) {
+        coherenceReassignments.push(`${name}: kept ${assignment.item} despite 0 ${primaryOffKey.toUpperCase()} SP invested — no non-damage-boosting candidate available without a team item conflict`);
+        continue;
+      }
+
+      usedItemsLower.delete(assignment.item.toLowerCase());
+      usedItemsLower.add(replacement.item.toLowerCase());
+      itemByPokemon[name] = { ...assignment, item: replacement.item, score: replacement.score, role_fit: replacement.role_fit, source: `${replacement.source || 'observed'}_coherence_reassigned` };
+      // Spread must be recomputed against the new item — a defensive item can
+      // shift which breakpoints are worth reaching (e.g. Assault Vest's own
+      // direct SpD bump), so the previous evoResults entry no longer applies.
+      evoResults[i] = await getOrComputeEvolutionarySpread(name, { item: replacement.item, teamBuild: true, fieldOpts: fieldOptsForMember(i) });
+      coherenceReassignments.push(`${name}: reassigned ${assignment.item} -> ${replacement.item} (0 ${primaryOffKey.toUpperCase()} SP invested; the item's damage bonus was not being used)`);
+    }
+    if (coherenceReassignments.length > 0) {
+      logger.info('TASK C item/spread coherence reconciliation', { changes: coherenceReassignments });
+    }
 
     // FIX 1: Pre-compute base abilities for Mega Pokemon (outside the .map() loop
     // since that's not async-friendly).
