@@ -15,6 +15,23 @@ const BULKY_ROLES = new Set(['slow_bulky_support', 'slow_bulky_offense']);
 // teammate). Scored low (0.25) so a real observed candidate always wins if one is
 // still available; this is a last-resort "everyone needs *an* item" guarantee,
 // not a claim that this fallback is commonly run.
+//
+// This pool used to be a hand-written per-role list (GENERIC_FALLBACK_BY_ROLE,
+// below) assembled from general Pokemon-VGC knowledge rather than this
+// format's own data. Verified live against the full tournament_teams corpus
+// (10,000+ scraped item slots): Assault Vest, Choice Band, Choice Specs, and
+// Rocky Helmet — all four hardcoded into that list — have ZERO observed
+// appearances, while items genuinely played only once (e.g. Poison Barb)
+// DO show up correctly. Zero-across-10,000+-with-single-play-items-visible is
+// strong evidence those four are not available in Champions Regulation M-B at
+// all (the owner independently confirmed this for Assault Vest), not merely
+// unpopular — and the hardcoded list was silently offering them as reasonable
+// defaults regardless. A hand-corrected replacement list would carry the
+// identical defect (disconnected from what's actually observed, so the next
+// unplayable item added to it recurs the same way) — so the fallback pool
+// itself is now DERIVED from real global item frequency (see
+// getGlobalItemFrequency below), filtered by the same itemRoleFit() already
+// used to score real candidates, rather than hardcoded per role.
 
 // FIX 8: damage-boosting items that require meaningful offensive investment
 // to be coherent. If the Pokemon's role is bulky support, these items lose
@@ -48,12 +65,26 @@ function itemCoherencePenalty(itemName, role) {
 function isDamageBoostingItem(itemName) {
   return DAMAGE_BOOSTING_ITEMS.has((itemName || '').toLowerCase());
 }
-const GENERIC_FALLBACK_BY_ROLE = {
-  fast_offense: ['Life Orb', 'Choice Scarf', 'Choice Band', 'Choice Specs', 'Focus Sash'],
-  slow_bulky_offense: ['Leftovers', 'Assault Vest', 'Life Orb', 'Rocky Helmet'],
-  slow_bulky_support: ['Leftovers', 'Sitrus Berry', 'Rocky Helmet', 'Assault Vest'],
-  fast_support: ['Sitrus Berry', 'Leftovers', 'Focus Sash', 'Choice Scarf'],
-};
+// Real, observed, global item frequency across every scraped team — the same
+// tournament_teams source getScoredCandidateItems' real candidates ultimately
+// come from (via getCommonItems), just not scoped to one species. Queried
+// once and memoized for the process lifetime (mirrors this file's other
+// small reference tables); only consulted by pickGenericFallback below, which
+// itself only fires when a Pokemon's own real per-species candidates are all
+// claimed by higher-priority teammates.
+let globalItemFrequencyCache = null;
+async function getGlobalItemFrequency() {
+  if (globalItemFrequencyCache) return globalItemFrequencyCache;
+  const { rows } = await pool.query(
+    `SELECT p->>'item' as item, COUNT(*) as count
+     FROM tournament_teams t, jsonb_array_elements(t.pokemon) p
+     WHERE p->>'item' IS NOT NULL AND p->>'item' != ''
+       AND LOWER(p->>'item') NOT IN ('no item', 'no items', 'nothing', 'none')
+     GROUP BY p->>'item' ORDER BY count DESC`
+  );
+  globalItemFrequencyCache = rows.map((r) => ({ item: r.item, count: parseInt(r.count, 10) }));
+  return globalItemFrequencyCache;
+}
 
 function round(value, decimals = 4) {
   const factor = 10 ** decimals;
@@ -242,14 +273,34 @@ async function getScoredCandidateItems(pokemonRow, role, options = {}) {
     .sort((a, b) => b.score - a.score);
 }
 
-function pickGenericFallback(role, pokemonRow, usedItemsLower, options = {}) {
-  const list = GENERIC_FALLBACK_BY_ROLE[role] || GENERIC_FALLBACK_BY_ROLE.fast_offense;
-  for (const item of list) {
-    if (options.isWeatherAbuser && item.toLowerCase() === 'choice scarf') continue;
-    if (!usedItemsLower.has(item.toLowerCase())) {
-      return { item, count: 0, frequency: 0, source: 'generic_fallback', role_fit: itemRoleFit(item, role, pokemonRow, options), score: 0.25 };
+// Ranks every real globally-observed item (see getGlobalItemFrequency) by
+// real frequency x itemRoleFit() for this Pokemon's role, and returns the
+// best-fit item not already claimed by a teammate. 0.25x scale on the score
+// keeps a fallback pick always below any real per-species candidate score
+// (see getScoredCandidateItems), same intent the old hardcoded list's flat
+// 0.25 score had — this is still a last-resort pick, not a claim it's common
+// for this specific Pokemon.
+function pickGenericFallback(role, pokemonRow, usedItemsLower, options = {}, globalItemFrequency = []) {
+  const total = globalItemFrequency.reduce((sum, i) => sum + i.count, 0);
+  let best = null;
+  for (const entry of globalItemFrequency) {
+    const itemLower = entry.item.toLowerCase();
+    if (usedItemsLower.has(itemLower)) continue;
+    if (options.isWeatherAbuser && itemLower === 'choice scarf') continue;
+    const roleFit = itemRoleFit(entry.item, role, pokemonRow, options);
+    const frequency = total > 0 ? entry.count / total : 0;
+    const score = round(frequency * roleFit * 0.25, 4);
+    if (!best || score > best.score) {
+      best = { item: entry.item, count: entry.count, frequency: round(frequency, 4), source: 'generic_fallback', role_fit: roleFit, score };
     }
   }
+  if (best) return best;
+  // Absolute last resort: every real observed item was already claimed by a
+  // teammate. Sitrus Berry is real and heavily played (1000+ observed
+  // appearances across the corpus), and a safe universal default regardless
+  // of role — this branch is expected to be effectively unreachable in
+  // practice (it would require every one of 100+ real observed items to
+  // already be claimed by the other 5 team members).
   return { item: 'Sitrus Berry', count: 0, frequency: 0, source: 'generic_fallback', role_fit: 0.5, score: 0.1 };
 }
 
@@ -261,7 +312,7 @@ function pickGenericFallback(role, pokemonRow, usedItemsLower, options = {}) {
 // until no conflicts remain (bounded iteration count as a safety net against
 // pathological cycles — never observed in practice with 6 Pokemon x 5 candidates,
 // but the team size/candidate count aren't hard-capped elsewhere in this module).
-function resolveItemConflicts(teamCandidates) {
+function resolveItemConflicts(teamCandidates, globalItemFrequency = []) {
   const pickIndex = new Map(); // pokemon -> index into their own candidates array
   for (const tc of teamCandidates) pickIndex.set(tc.pokemon, 0);
 
@@ -307,7 +358,7 @@ function resolveItemConflicts(teamCandidates) {
     const idx = pickIndex.get(tc.pokemon);
     let nextBest = tc.candidates[idx + 1] || null;
     if (!pick || usedItemsLower.has(pick.item.toLowerCase())) {
-      pick = pickGenericFallback(tc.role, tc.pokemonRow, usedItemsLower, { isWeatherAbuser: tc.isWeatherAbuser });
+      pick = pickGenericFallback(tc.role, tc.pokemonRow, usedItemsLower, { isWeatherAbuser: tc.isWeatherAbuser }, globalItemFrequency);
       nextBest = null;
     }
     usedItemsLower.add(pick.item.toLowerCase());
@@ -441,4 +492,6 @@ module.exports = {
   OFFENSIVE_ROLES,
   BULKY_ROLES,
   isDamageBoostingItem,
+  getGlobalItemFrequency,
+  DAMAGE_BOOSTING_ITEMS,
 };
