@@ -36,7 +36,7 @@ const pool = require('../db/pool');
 const { effectivenessAgainst, resistancesOf } = require('./typeChart');
 const { getMostCommonSpread, getCommonSpreads, getCommonItems, getSpeciesRow } = require('./ev_observations');
 const {
-  damagePercentRange, effectiveSpeed, typesOf, selfInflictedStatus,
+  damagePercentRange, effectiveSpeed, describeSpeedModifiers, typesOf, selfInflictedStatus,
 } = require('./team_analyzer');
 const { buildSwaps, teamValueOf, candidateProfile } = require('./archetype_swaps');
 const {
@@ -1125,7 +1125,7 @@ function ohkoWinLine(label, k, targetName) {
   return note ? `${head}\n${note}` : head;
 }
 
-async function buildConditions(archetype, team, threats, bucket, weather, counters) {
+async function buildConditions(archetype, team, threats, bucket, weather, counters, weatherAnalysis) {
   const lose = [];
   const win = [];
   const weatherOfArchetype = archetypeWeather(archetype);
@@ -1153,8 +1153,8 @@ async function buildConditions(archetype, team, threats, bucket, weather, counte
       // abusers spend the game under their identical weather with their side
       // holding the tempo.
       const outsped = ourMatching.filter((m) => {
-        const ourSpeed = m.final_stats?.spe ?? m.pokemonRow.spe;
-        return theirSettersForLose.some((t) => t.speed != null && t.speed < ourSpeed);
+        const ourSpeed = effectiveSpeed(m, weatherAnalysis);
+        return theirSettersForLose.some((t) => t.speed != null && ourSpeed != null && t.speed < ourSpeed);
       });
       // Only a real problem if this is our LAST setter of that weather. With a
       // second setter (or a weather move) we simply re-set it, and being faster
@@ -1209,11 +1209,11 @@ async function buildConditions(archetype, team, threats, bucket, weather, counte
     // Slower setter wins the weather war: the last ability to activate sticks.
     for (const setter of theirSetters) {
       const slower = ourSetters.filter((m) => {
-        const ourSpeed = m.final_stats?.spe ?? m.pokemonRow.spe;
-        return setter.speed != null && ourSpeed < setter.speed;
+        const ourSpeed = effectiveSpeed(m, weatherAnalysis);
+        return setter.speed != null && ourSpeed != null && ourSpeed < setter.speed;
       });
       for (const m of slower) {
-        win.push(`Win the weather war with ${m.pokemon} — slower than ${setter.pokemon} (${m.final_stats?.spe ?? m.pokemonRow.spe} vs ${setter.speed}), so our weather lands second and sticks`);
+        win.push(`Win the weather war with ${m.pokemon} — slower than ${setter.pokemon} (${effectiveSpeed(m, weatherAnalysis)} vs ${setter.speed}), so our weather lands second and sticks`);
       }
     }
     const backupSetters = ourSetters.filter((m) => (m.moves || []).some((mv) => WEATHER_MOVE[lower(mv.move)]));
@@ -1519,8 +1519,17 @@ const SPEED_DECIDES_MULT = 4;      // ...and it would have OHKO'd us
  * most expendable member — the same team-value model the swap logic already uses
  * to decide who is droppable.
  */
-async function buildExchangeGrid(team, threats, counters, archetype, weatherAnalysis, weather, teamValues) {
+async function buildExchangeGrid(team, threats, counters, archetype, weatherAnalysis, weather, weathers, teamValues) {
   const trickRoom = archetype === TRICK_ROOM_ARCHETYPE;
+
+  // The cell score needs exactly one weather to be decided under: the
+  // archetype's own when it has one, else our own weather if this team sets
+  // one, else no weather. Every OTHER plausible weather is still checked per
+  // move via weatherChangesDamage and surfaced alongside when it would change
+  // the number — a KO that only lands in one weather must never read as
+  // unconditional (see Known Issues / Task 2).
+  const scoreWeather = weather || weathers.find((w) => (w.source || '').startsWith('our '))?.weather || null;
+  const ourTailwindAvailable = team.some((m) => hasMove(m, 'tailwind'));
 
   const rows = [];
   const perMemberDeaths = new Map();
@@ -1528,6 +1537,7 @@ async function buildExchangeGrid(team, threats, counters, archetype, weatherAnal
 
   for (const threat of threats) {
     const threatSpeed = threat.speed;
+    const theirTailwind = (threat.top_moves || []).some((m) => lower(m) === 'tailwind');
     const cells = [];
 
     for (const member of team) {
@@ -1537,11 +1547,31 @@ async function buildExchangeGrid(team, threats, counters, archetype, weatherAnal
       let theyOhko = false;
       let theirBest = 0;
       let killingMove = null;
+      const weatherAlternates = [];
       for (const moveName of threat.top_moves.slice(0, 4)) {
-        const dmg = await calcThreatDamage(threat, moveName, member, weather);
+        const dmg = await calcThreatDamage(threat, moveName, member, scoreWeather);
         if (!dmg) { calcFailures += 1; continue; }
         if (dmg.max > theirBest) theirBest = dmg.max;
         if (dmg.min >= 100 && !theyOhko) { theyOhko = true; killingMove = { move: moveName, range: `${dmg.min}-${dmg.max}%` }; }
+
+        // Only worth a second calc where weather could plausibly change THIS
+        // move's number against THIS defender — the same analytical gate Key
+        // Threats already uses, not a blind re-run of every move under every
+        // weather (that cost is exactly what the gate exists to avoid).
+        const moveRow = await getMoveRowCached(moveName);
+        const defTypes = typesOf(member.pokemonRow);
+        for (const w of weathers) {
+          if (w.weather === scoreWeather) continue;
+          const mattersHere = weatherChangesDamage(moveName, moveRow?.type, moveRow?.category, defTypes, w.weather)
+            || weatherChangesDamage(moveName, moveRow?.type, moveRow?.category, defTypes, scoreWeather);
+          if (!mattersHere) continue;
+          const altDmg = await calcThreatDamage(threat, moveName, member, w.weather);
+          if (!altDmg) continue;
+          if (altDmg.min === dmg.min && altDmg.max === dmg.max) continue; // gate is conservative; this pair happens to agree
+          weatherAlternates.push({
+            move: moveName, source: w.source, range: `${altDmg.min}-${altDmg.max}%`, ohko: altDmg.min >= 100,
+          });
+        }
       }
       // Focus Sash counts as surviving — the calculator already caps a single
       // hit below 100% for a Sash holder at full HP, so `min >= 100` is false
@@ -1556,6 +1586,34 @@ async function buildExchangeGrid(team, threats, counters, archetype, weatherAnal
       const weMoveFirst = threatSpeed == null
         ? null
         : (trickRoom ? ourSpeed < threatSpeed : ourSpeed > threatSpeed);
+      const ourSpeedNote = describeSpeedModifiers(member, weatherAnalysis);
+      const theirSpeedNote = describeSpeedModifiers(
+        { item: threat.item, ability: threat.ability },
+        { setters: weather ? [{ weather }] : [] },
+      );
+
+      // Tailwind (2x Speed, 4 turns only) is a SCENARIO, never folded into the
+      // baseline order above — this function also decides Trick Room viability
+      // and the team's baseline speed tiers, where an always-on Tailwind would
+      // be wrong. Surfaced only when it actually flips who moves first; a cell
+      // whose order was already settled doesn't need it.
+      let tailwindScenario = null;
+      if (weMoveFirst != null) {
+        if (ourTailwindAvailable) {
+          const ourSpeedTw = effectiveSpeed(member, weatherAnalysis, { tailwind: true });
+          const flipped = (trickRoom ? ourSpeedTw < threatSpeed : ourSpeedTw > threatSpeed);
+          if (flipped !== weMoveFirst) {
+            tailwindScenario = { side: 'ours', our_speed: ourSpeedTw, their_speed: threatSpeed, we_move_first: flipped };
+          }
+        }
+        if (!tailwindScenario && theirTailwind) {
+          const theirSpeedTw = Math.floor(threatSpeed * 2);
+          const flipped = (trickRoom ? ourSpeed < theirSpeedTw : ourSpeed > theirSpeedTw);
+          if (flipped !== weMoveFirst) {
+            tailwindScenario = { side: 'theirs', our_speed: ourSpeed, their_speed: theirSpeedTw, we_move_first: flipped };
+          }
+        }
+      }
 
       // Speed's weight escalates with what it decides.
       let speedWeight = CELL_WEIGHTS.speed;
@@ -1580,10 +1638,15 @@ async function buildExchangeGrid(team, threats, counters, archetype, weatherAnal
         they_ohko_us: theyOhko,
         their_killing_move: killingMove,
         their_best_damage: theirBest,
+        their_damage_weather_alternates: weatherAlternates,
         we_ohko_them: weOhko,
         our_killing_move: ourKill ? { move: ourKill.move, range: ourKill.damage_range } : null,
         we_move_first: weMoveFirst,
         our_speed: ourSpeed,
+        their_speed: threatSpeed,
+        our_speed_note: ourSpeedNote,
+        their_speed_note: theirSpeedNote,
+        tailwind_scenario: tailwindScenario,
         team_value: teamValues.get(member.pokemon)?.score ?? 0,
         score,
       });
@@ -1638,6 +1701,15 @@ async function buildExchangeGrid(team, threats, counters, archetype, weatherAnal
     weakest_link: weakestLink,
     calc_failures: calcFailures,
     cell_weights: { ...CELL_WEIGHTS, speed_matters_mult: SPEED_MATTERS_MULT, speed_decides_mult: SPEED_DECIDES_MULT },
+    // What board this grid assumes — the reader must be able to tell without
+    // inferring it (Known Issues / Task 2, item 4).
+    assumptions: {
+      score_weather: scoreWeather,
+      score_weather_source: scoreWeather === weather ? 'their archetype weather' : (scoreWeather ? 'our own weather (archetype sets none)' : 'no weather'),
+      weathers_considered: weathers.map((w) => w.source),
+      our_tailwind_available: ourTailwindAvailable,
+      tailwind_is_four_turns: true,
+    },
   };
 }
 
@@ -1657,7 +1729,7 @@ async function analyzeArchetypeMatchupsLive(team, weatherAnalysis, synergies, le
 
     const resistances = await buildResistances(team, threats);
     const counters = await buildCounters(team, threats, weather, weathers);
-    const conditions = await buildConditions(archetype, team, threats, bucket, weather, counters);
+    const conditions = await buildConditions(archetype, team, threats, bucket, weather, counters, weatherAnalysis);
     const bestSet = await buildBestTeamSet(team, threats, counters, archetype, weatherAnalysis, synergies, weather);
 
     let swaps = null;
@@ -1684,7 +1756,7 @@ async function analyzeArchetypeMatchupsLive(team, weatherAnalysis, synergies, le
     const teamValues = new Map();
     for (const m of team) teamValues.set(m.pokemon, teamValueOf(m, team, synergies));
 
-    const ledger = await buildExchangeGrid(team, threats, counters, archetype, weatherAnalysis, weather, teamValues);
+    const ledger = await buildExchangeGrid(team, threats, counters, archetype, weatherAnalysis, weather, weathers, teamValues);
 
     results.push({
       archetype,

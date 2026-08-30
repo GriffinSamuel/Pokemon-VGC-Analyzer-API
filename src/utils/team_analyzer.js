@@ -423,12 +423,61 @@ function analyzeWeather(team) {
 const CONDITIONAL_SPEED_ABILITIES_FOR_TR = {
   'swift swim': 'Rain', chlorophyll: 'Sun', 'sand rush': 'Sand', 'slush rush': 'Snow',
 };
-function effectiveSpeed(member, weatherAnalysis) {
-  const rawSpeed = member.final_stats?.spe ?? member.pokemonRow.spe;
-  if ((member.item || '').toLowerCase() === 'choice scarf') return rawSpeed * 1.5;
+
+// weatherAnalysis has two live shapes depending on caller: the real
+// analyzeWeather() output ({ setters, by_weather, notes }), used by every
+// caller inside this file, and archetype_matchups.js's buildKeyThreats, which
+// has no per-team weather breakdown for an opposing threat and instead passes
+// a bare marker of the archetype's own weather ({ setters: [{ weather }] }).
+// Both mean the same thing — "is this weather actually up" — so this reads
+// either shape rather than making the caller conform to one.
+function weatherIsActive(weatherCtx, weatherName) {
+  if (!weatherCtx || !weatherName) return false;
+  if ((weatherCtx.by_weather?.[weatherName]?.length || 0) > 0) return true;
+  return (weatherCtx.setters || []).some((s) => s.weather === weatherName);
+}
+
+// A team member's real, comparable Speed for any speed-order comparison
+// (Trick Room viability, speed tiers, matchup exchanges). `final_stats.spe` is
+// used when present (our own team's real computed stat); otherwise the final
+// stat is computed here via the same calcStat()/natureMultiplierFor() the SP
+// system uses everywhere else — needed for opposing threats, which only carry
+// a base-stat row plus an observed SP spread, never a precomputed final stat.
+// Choice Scarf (1.5x), a matching active weather-boost ability (2x) and an
+// explicit Tailwind scenario (2x, opt-in via `opts.tailwind` — never assumed,
+// since this same function also decides Trick Room viability and the team's
+// baseline speed-tier listing, where an always-on Tailwind would be wrong)
+// all stack multiplicatively, each floored immediately after applying — the
+// same way the game applies successive Speed modifiers.
+function effectiveSpeed(member, weatherAnalysis, opts) {
+  let stat = member.final_stats?.spe;
+  if (stat == null) {
+    const base = member.pokemonRow?.spe;
+    if (base == null) return null;
+    const spSpe = member.sp?.spe || 0;
+    const alignment = natureMultiplierFor(member.nature, 'spe');
+    stat = calcStat(base, spSpe, alignment, false);
+  }
+  if ((member.item || '').toLowerCase() === 'choice scarf') stat = Math.floor(stat * 1.5);
   const requiredWeather = CONDITIONAL_SPEED_ABILITIES_FOR_TR[(member.ability || '').toLowerCase()];
-  if (requiredWeather && (weatherAnalysis?.by_weather?.[requiredWeather]?.length || 0) > 0) return rawSpeed * 2;
-  return rawSpeed;
+  if (requiredWeather && weatherIsActive(weatherAnalysis, requiredWeather)) stat = Math.floor(stat * 2);
+  if (opts?.tailwind) stat = Math.floor(stat * 2);
+  return stat;
+}
+
+// Human-readable fragment naming whatever is multiplying this member's Speed
+// (Choice Scarf / a matching active weather ability / Tailwind), or null when
+// nothing is. Lets a report line say WHY a number is what it is — "moves
+// second (71 vs 180, Swift Swim in Rain)" — instead of just the number.
+function describeSpeedModifiers(member, weatherAnalysis, opts) {
+  const notes = [];
+  if ((member.item || '').toLowerCase() === 'choice scarf') notes.push('Choice Scarf');
+  const requiredWeather = CONDITIONAL_SPEED_ABILITIES_FOR_TR[(member.ability || '').toLowerCase()];
+  if (requiredWeather && weatherIsActive(weatherAnalysis, requiredWeather)) {
+    notes.push(`${member.ability} in ${requiredWeather}`);
+  }
+  if (opts?.tailwind) notes.push('Tailwind');
+  return notes.length > 0 ? notes.join(', ') : null;
 }
 
 // --- TRICK ROOM INTERACTION ---------------------------------------------------------
@@ -1657,6 +1706,7 @@ module.exports = {
   // this module must never require it back (the route wires them together).
   damagePercentRange,
   effectiveSpeed,
+  describeSpeedModifiers,
   typesOf,
   topMovesFor,
   getTop50UsageRows,

@@ -764,9 +764,17 @@ Careful Nature
         if (t.speed == null || t.base_speed == null) continue;
         const ceiling = Math.floor((t.base_speed + 32 + 20) * 1.1);
         const doubles = SPEED_DOUBLERS.has(String(t.ability || '').toLowerCase());
-        const allowed = doubles ? ceiling * 2 : ceiling;
+        // Choice Scarf (1.5x) is a real, legitimate stack on top of the SP-max
+        // ceiling, same as an active speed-doubling ability — a real Pokemon's
+        // effective Speed genuinely can and does exceed its bare final stat.
+        // Missing here until the fix that made threat.speed a real effective
+        // speed instead of a raw base stat (see Known Issues) — under the old
+        // bug this branch was unreachable because threat.speed never got large
+        // enough to need it.
+        const scarfed = String(t.item || '').toLowerCase() === 'choice scarf';
+        const allowed = ceiling * (scarfed ? 1.5 : 1) * (doubles ? 2 : 1);
         assert(t.speed <= allowed,
-          `${m.archetype}: ${t.pokemon} reported at ${t.speed} Spe, but base ${t.base_speed} caps at ${allowed}${doubles ? ' (ability-doubled)' : ''}`);
+          `${m.archetype}: ${t.pokemon} reported at ${t.speed} Spe, but base ${t.base_speed} caps at ${allowed}${doubles ? ' (ability-doubled)' : ''}${scarfed ? ' (Scarf)' : ''}`);
       }
     }
   });

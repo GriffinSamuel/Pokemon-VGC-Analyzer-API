@@ -40,7 +40,6 @@ const { RECOIL_MOVES } = require('./spread_scorer');
 // "brings Reflect" with no number attached is the note-instead-of-a-calc that
 // this section is supposed to stop producing.
 const { CalcDamage, getMoveData, buildStatsFromSP } = require('./nerd_of_now_calc');
-const { calcStat, natureMultiplierFor } = require('./stat_formula');
 const { baseSpeciesFallback } = require('./species_base_form');
 const { round } = require('./format');
 
@@ -1000,19 +999,19 @@ async function observedInvestment(nameLower) {
 /**
  * Effective Speed from a REAL final stat.
  *
- * archetype_matchups.js's buildKeyThreats calls effectiveSpeed with
- * `final_stats: null`, so effectiveSpeed falls back to `pokemonRow.spe` and the
- * `speed` it publishes on every key threat is that threat's BASE Speed, not its
- * built Speed. Comparing a candidate's real final Speed (which can be 60+ points
- * higher) against those numbers would make literally everything "fast", so this
- * file computes both sides itself, from each Pokemon's own spread, and reports
- * the basis it used.
+ * Was a workaround for effectiveSpeed() (team_analyzer.js) never computing a
+ * final stat itself — it only read `final_stats.spe` or fell back to raw base
+ * Speed, so buildKeyThreats' threats (which have no precomputed final_stats)
+ * always published base Speed. This file used to duplicate the SP formula
+ * locally to route around that. effectiveSpeed() now computes the final stat
+ * itself (see Known Issues), so this is a thin pass-through kept only for this
+ * file's calling convention (separate row/sp/nature/item/ability args rather
+ * than one member object).
  */
 function effectiveSpeedFor(row, sp, nature, item, ability, weather) {
   if (!row || row.spe == null) return null;
-  const spe = calcStat(row.spe, sp?.spe || 0, natureMultiplierFor(nature || 'Hardy', 'spe'), false);
   return effectiveSpeed(
-    { pokemonRow: row, final_stats: { spe }, sp: sp || {}, nature: nature || 'Hardy', item: item || '', ability: ability || '' },
+    { pokemonRow: row, final_stats: null, sp: sp || {}, nature: nature || 'Hardy', item: item || '', ability: ability || '' },
     { by_weather: weather ? { [weather]: [{ weather }] } : {} }
   );
 }

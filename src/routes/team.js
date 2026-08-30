@@ -1182,19 +1182,39 @@ function buildTeamBuildText(responseBody, team) {
       // six OHKO our only Mega while the row still read "survive:Y" because
       // Kingambit happened to live.
       const cw = led.cell_weights || {};
+      const asum = led.assumptions || {};
+      const weatherAssumption = asum.score_weather ? `${asum.score_weather} (${asum.score_weather_source})` : 'no weather';
+      const tailwindAssumption = asum.our_tailwind_available
+        ? 'we can bring Tailwind (4 turns, not persistent) — flips shown per-cell only where they change move order'
+        : 'no Tailwind on this team';
       lines.push(`  Exchange grid (${cw.we_ohko} we KO + ${cw.we_survive} we live + ${cw.speed} speed, speed x${cw.speed_matters_mult} if it lands a KO, x${cw.speed_decides_mult} if it also denies theirs; rows weighted by team value):`);
+      lines.push(`    Assumes: scored under ${weatherAssumption}; ${tailwindAssumption}. Other plausible weathers (${(asum.weathers_considered || []).join(', ') || 'none'}) are shown per-cell only where they'd change a number.`);
       for (const r of led.rows) {
         lines.push(`    ${r.pokemon.padEnd(22)} ${(r.usage * 100).toFixed(1).padStart(5)}%  -> ${r.score.toFixed(2)}`);
         const kills = r.ohkos_our.length ? `KOs ours: ${r.ohkos_our.join(', ')}` : 'KOs none of ours';
         const dies = r.ohko_d_by_our.length ? `KO'd by: ${r.ohko_d_by_our.join(', ')}` : "we KO it with nothing";
         lines.push(`        ${kills}  |  ${dies}`);
         for (const c of r.cells) {
+          const speedBits = [];
+          if (c.our_speed_note) speedBits.push(`our ${c.our_speed_note}`);
+          if (c.their_speed_note) speedBits.push(`their ${c.their_speed_note}`);
+          const speedTag = speedBits.length ? `, ${speedBits.join(', ')}` : '';
+          const speedMark = c.we_move_first === null
+            ? 'speed unknown'
+            : `moves ${c.we_move_first ? 'first' : 'second'} (${c.our_speed} vs ${c.their_speed}${speedTag})`;
           const marks = [
             c.they_ohko_us ? `DIES to ${c.their_killing_move?.move} (${c.their_killing_move?.range})` : `survives (worst ${c.their_best_damage}%)`,
             c.we_ohko_them ? `KOs back with ${c.our_killing_move?.move}` : 'no KO back',
-            c.we_move_first === null ? 'speed unknown' : (c.we_move_first ? `moves first (${c.our_speed})` : `moves second (${c.our_speed})`),
+            speedMark,
           ];
           lines.push(`          ${c.our.padEnd(20)} ${marks.join(' | ')}`);
+          if (c.tailwind_scenario) {
+            const tw = c.tailwind_scenario;
+            lines.push(`              under ${tw.side === 'ours' ? 'our' : 'their'} Tailwind: moves ${tw.we_move_first ? 'first' : 'second'} (${tw.our_speed} vs ${tw.their_speed})`);
+          }
+          for (const alt of (c.their_damage_weather_alternates || [])) {
+            lines.push(`              ${alt.move} in ${alt.source}: ${alt.range}${alt.ohko ? ' (KO)' : ''}`);
+          }
         }
       }
       if (led.weakest_link) {
