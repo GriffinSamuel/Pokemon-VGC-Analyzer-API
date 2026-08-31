@@ -450,9 +450,21 @@ async function weightedDefensiveDamage({ attackerRow, move, attackerSpreads, att
     // FIX 3/4: attackerItem (real, top damage-affecting observed item — see
     // getCachedAttackerItem) folded into the cache key and the actual calc, same
     // as every other real attacker-side input (spread, nature) already was.
+    //
+    // Weather tagging (weather_labels task): this cache key never included
+    // weather at all — dormant until this session, since no caller had ever
+    // invoked this function twice with the same attacker/move/spread/defender-
+    // stats under two DIFFERENT weathers before the new defensive alt-weather
+    // feature did. Without it, the alt-weather recalc below silently returned
+    // the PRIMARY weather's cached result — a Water move's "Rain alternative"
+    // read identical to its Sun number, the exact "answers a narrower question
+    // than what the caller now needs" defect this whole task exists to fix,
+    // just found one layer deeper than expected. weightedOffensiveDamage()
+    // (below) already included weather in its own cache key — this brings the
+    // defensive function in line with it.
     const cacheKey = [
       'def', attackerRow.name.toLowerCase(), move.toLowerCase(), JSON.stringify(spread.sp), spreadNature, attackerItem || '',
-      defenderFinalStats.hp, defenderFinalStats.def, defenderFinalStats.spd, defenderItem || '',
+      defenderFinalStats.hp, defenderFinalStats.def, defenderFinalStats.spd, defenderItem || '', fieldOpts?.weather || '',
     ].join('~');
 
     let calcResult = damageCalcCache.get(cacheKey);
