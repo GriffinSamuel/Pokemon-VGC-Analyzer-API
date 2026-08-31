@@ -9,6 +9,7 @@ const { classifyRole } = require('./role_classifier');
 const { CalcDamage, getMoveData } = require('./nerd_of_now_calc');
 const { effectivenessAgainst } = require('./typeChart');
 const { round } = require('./format');
+const { weatherChangesDamage, resolveTypeFor, accuracyNoteFor } = require('./weather_rules');
 
 // Items @smogon/calc already models natively (Choice Scarf's 1.5x Speed, Choice
 // Band/Specs'/Life Orb's damage multipliers + Life Orb recoil, Assault Vest's
@@ -86,20 +87,13 @@ const SCORER_VERSION = 13;
 //
 // An attacker that sets its own weather always attacks under it (Torkoal's
 // Drought makes its Weather Ball Fire); otherwise the field weather this
-// threshold was calculated under decides.
-const WB_TYPES = { Rain: 'Water', Sun: 'Fire', Sand: 'Rock', Snow: 'Ice' };
-const WB_SETTER_ABILITY = { Drizzle: 'Rain', Drought: 'Sun', 'Sand Stream': 'Sand', 'Snow Warning': 'Snow' };
-
-function normalizeWeather(weather) {
-  if (!weather) return null;
-  const s = String(weather);
-  return s.charAt(0).toUpperCase() + s.slice(1).toLowerCase();
-}
-
+// threshold was calculated under decides. resolveTypeFor() lives in
+// weather_rules.js — shared with archetype_matchups.js and team.js rather
+// than re-derived a third time in this file (this WAS a third copy, now
+// removed).
 function displayMoveName(moveName, attackerAbility, fieldWeather) {
   if (moveName !== 'Weather Ball') return moveName;
-  const weather = WB_SETTER_ABILITY[attackerAbility] || normalizeWeather(fieldWeather);
-  const type = weather ? WB_TYPES[weather] : null;
+  const type = resolveTypeFor(moveName, null, attackerAbility, fieldWeather);
   return type ? `Weather Ball (${type})` : 'Weather Ball (Normal — no weather)';
 }
 
@@ -836,6 +830,53 @@ async function scoreSpread(pokemon, sp, nature, role, threatMatrix, metaContext,
         // independently load-bearing, not the case where only the pair is.
         if (tierIndex(koResult) <= tierIndex(koWithoutAttributed)) continue;
 
+        // Weather tagging (Task: every weather-dependent number must name its
+        // weather). Only for moves where weatherChangesDamage() says the
+        // NUMBER could actually differ under a live alternate weather — never
+        // run an alt-weather recalc for a move weather can't touch. Mirrors
+        // the OFFENSIVE branch below (primary_weather/alt_weathers), which
+        // this branch previously left entirely unset — that omission is the
+        // root cause of e.g. a Water-move HP threshold printing an unlabelled
+        // number computed under our own Sun while the same move under a live
+        // Rain elsewhere on the board is 3x worse.
+        const resolvedMoveType = resolveTypeFor(threat.move, moveRow.type, attackerAbility, primaryWeather);
+        let thresholdPrimaryWeather = null;
+        let thresholdAltWeathers = null;
+        if (weatherChangesDamage(threat.move, resolvedMoveType, moveRow.category, defenderTypes, primaryWeather, { attackerItem, defenderItem: item })) {
+          thresholdPrimaryWeather = primaryWeather;
+          // Map, not Set: tracks WHERE each alt weather comes from so the
+          // renderer can say "our Rain" vs "their Sun" rather than a bare
+          // weather name — a team weather we also set is a live alternative to
+          // OUR OWN primary weather; the attacker's own setting ability is a
+          // live alternative regardless of what we set, and is genuinely
+          // theirs, not ours.
+          const altCandidates = new Map();
+          if (teamWeathers.length > 1) {
+            for (const w of teamWeathers) if (w !== primaryWeather) altCandidates.set(w, 'team');
+          }
+          const attackerWeatherAbility = WEATHER_SETTER_ABILITIES[(attackerAbility || '').toLowerCase()];
+          if (attackerWeatherAbility && attackerWeatherAbility !== primaryWeather) altCandidates.set(attackerWeatherAbility, 'opponent');
+          for (const [altWeather, altSource] of altCandidates) {
+            const altResolvedType = resolveTypeFor(threat.move, moveRow.type, attackerAbility, altWeather);
+            if (!weatherChangesDamage(threat.move, altResolvedType, moveRow.category, defenderTypes, altWeather, { attackerItem, defenderItem: item })) continue;
+            const altResult = await weightedDefensiveDamage({
+              attackerRow, move: threat.move, attackerSpreads, attackerItem, defenderRow: pokemon,
+              defenderFinalStats: finalStats, defenderSp: sp, defenderNature: nature, defenderItem: item,
+              threatPrimaryNature: threat.primary_nature, fieldOpts: { ...fieldOpts, weather: altWeather },
+            });
+            if (altResult.weightedMin > 0 || altResult.weightedMax > 0) {
+              thresholdAltWeathers = thresholdAltWeathers || [];
+              thresholdAltWeathers.push({
+                weather: altWeather,
+                source: altSource,
+                weighted_damage_min: altResult.weightedMin,
+                weighted_damage_max: altResult.weightedMax,
+                this_spread_ko: koFromPercent(altResult.koCheckValue),
+              });
+            }
+          }
+        }
+
         met.push({
           category: 'defensive',
           stat: attributedStat,
@@ -849,6 +890,9 @@ async function scoreSpread(pokemon, sp, nature, role, threatMatrix, metaContext,
           weighted_damage_min: current.weightedMin,
           weighted_damage_max: current.weightedMax,
           aggression_multiplier: aggressionMultiplier,
+          primary_weather: thresholdPrimaryWeather,
+          alt_weathers: thresholdAltWeathers,
+          accuracy_note: accuracyNoteFor(threat.move, primaryWeather),
           contribution,
         });
       }
@@ -884,6 +928,8 @@ async function scoreSpread(pokemon, sp, nature, role, threatMatrix, metaContext,
       let bestMove = null;
       let bestStatKey = null;
       let bestAttackerSpFull = null;
+      let bestMoveType = null;
+      let bestMoveCategory = null;
       for (const moveEntry of ownMoves) {
         const moveRow = await getMoveRow(moveEntry.move.toLowerCase());
         if (!moveRow || moveRow.category === 'Status' || !moveRow.power) continue;
@@ -905,9 +951,12 @@ async function scoreSpread(pokemon, sp, nature, role, threatMatrix, metaContext,
           bestMove = moveEntry.move;
           bestStatKey = statKey;
           bestAttackerSpFull = attackerSpFull;
+          bestMoveType = moveRow.type;
+          bestMoveCategory = moveRow.category;
         }
       }
       if (!bestCurrent) continue;
+      const targetTypes = [targetRow.type1, targetRow.type2].filter(Boolean);
 
       const koResult = koFromPercent(bestCurrent.koCheckValue);
       const baselineKo = koFromPercent(bestBaseline.koCheckValue);
@@ -935,17 +984,27 @@ async function scoreSpread(pokemon, sp, nature, role, threatMatrix, metaContext,
           };
           // Alternative weather display: if there are other team weathers that
           // differ from the primary (e.g., Pelipper's Rain + Charizard's Sun),
-          // compute what this threshold would look like under each alternative.
-          // Only computed in the detailed pass (once per final candidate, not
-          // during GA search).
+          // compute what this threshold would look like under each alternative
+          // — but ONLY when weatherChangesDamage() says the move/target pairing
+          // could actually produce a different number under that weather.
+          // Previously this ran unconditionally whenever the team had >1
+          // weather, regardless of whether bestMove was weather-sensitive at
+          // all — wasted recalcs and a same-number "also in Rain: OHKOs" line
+          // on moves weather can't touch. Only computed in the detailed pass
+          // (once per final candidate, not during GA search).
           // Tag the threshold with the primary weather so the Why block can
           // annotate it and also show alternative-weather outcomes.
-          metEntry.primary_weather = primaryWeather;
-          if (primaryWeather && teamWeathers.length > 1) {
+          const primaryResolvedType = resolveTypeFor(bestMove, bestMoveType, null, primaryWeather);
+          const bestMoveWeatherSensitive = weatherChangesDamage(bestMove, primaryResolvedType, bestMoveCategory, targetTypes, primaryWeather, { attackerItem: item });
+          metEntry.primary_weather = bestMoveWeatherSensitive ? primaryWeather : null;
+          metEntry.accuracy_note = accuracyNoteFor(bestMove, primaryWeather);
+          if (bestMoveWeatherSensitive && primaryWeather && teamWeathers.length > 1) {
             const altWeathers = teamWeathers.filter(w => w !== primaryWeather);
             if (altWeathers.length > 0) {
               const altResults = [];
               for (const altWeather of altWeathers) {
+                const altResolvedType = resolveTypeFor(bestMove, bestMoveType, null, altWeather);
+                if (!weatherChangesDamage(bestMove, altResolvedType, bestMoveCategory, targetTypes, altWeather, { attackerItem: item })) continue;
                 const altFieldOpts = { ...fieldOpts, weather: altWeather };
                 const altCurrent = await weightedOffensiveDamage({
                   attackerRow: pokemon, attackerSp: bestAttackerSpFull, attackerNature: nature, attackerItem: item,
@@ -967,7 +1026,12 @@ async function scoreSpread(pokemon, sp, nature, role, threatMatrix, metaContext,
           // ability (e.g., Tyranitar's Sand Stream, Torkoal's Drought) or a
           // weather-requiring ability that ties it to a weather archetype
           // (e.g., Excadrill's Sand Rush, Venusaur's Chlorophyll), show what
-          // this threshold looks like under that weather too.
+          // this threshold looks like under that weather too. Each candidate
+          // weather gets its own weatherChangesDamage() check below rather than
+          // reusing bestMoveWeatherSensitive (computed only for primaryWeather)
+          // — a move can be weather-sensitive under one weather and not another
+          // (e.g. Sand's Rock-defender SpD boost only fires when the target IS
+          // Rock, independent of what primaryWeather happens to be).
           const targetWeatherAbilities = [targetRow.ability1, targetRow.ability2, targetRow.ability_hidden]
             .filter(Boolean)
             .map(a => WEATHER_SETTER_ABILITIES[a.toLowerCase()] || CONDITION_REQUIRING_ABILITIES[a.toLowerCase()])
@@ -979,6 +1043,8 @@ async function scoreSpread(pokemon, sp, nature, role, threatMatrix, metaContext,
             const existingAltWeathers = new Set((metEntry.alt_weathers || []).map(a => a.weather));
             for (const tgtWeather of uniqueTargetWeathers) {
               if (existingAltWeathers.has(tgtWeather)) continue;
+              const tgtResolvedType = resolveTypeFor(bestMove, bestMoveType, null, tgtWeather);
+              if (!weatherChangesDamage(bestMove, tgtResolvedType, bestMoveCategory, targetTypes, tgtWeather, { attackerItem: item })) continue;
               const tgtFieldOpts = { ...fieldOpts, weather: tgtWeather };
               const tgtCurrent = await weightedOffensiveDamage({
                 attackerRow: pokemon, attackerSp: bestAttackerSpFull, attackerNature: nature, attackerItem: item,
