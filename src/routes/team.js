@@ -23,7 +23,6 @@ const {
   analyzeTrickRoom, analyzeSpeedTiers, analyzeWeaknesses, analyzeArchetypeMatchups,
   analyzeMatchups, getLegalPokemonSet, suggestCoverageReplacements,
 } = require('../utils/team_analyzer');
-const { analyzeArchetypeMatchupsLive } = require('../utils/archetype_matchups');
 const { checkSpeciesLegality } = require('../config/format_legality');
 const fs = require('fs');
 const path = require('path');
@@ -721,53 +720,6 @@ function sectionDivider(label) {
   return opening + '─'.repeat(Math.max(TEXT_DIVIDER_WIDTH - opening.length, 4));
 }
 
-// The exchange grid's primary verdict line. `their_primary_scenarios` is the
-// full list of (weather, resolved-type, range, ohko) results already computed
-// for whichever move is responsible for the verdict — always at least the
-// scoring-weather scenario, plus one entry per OTHER plausible weather that
-// could actually change this specific move's number (Known Issues / Task 2:
-// the primary damage line didn't name its weather; Task 1: "worst" wasn't the
-// worst because a bigger number from another weather never fed back in).
-//
-// A single scenario means weather genuinely cannot change this move's number
-// against this defender — no tag is printed for it, matching this report's
-// existing convention elsewhere (Counters section) of naming weather only
-// when it could have mattered, so a bracket next to every line doesn't read
-// as noise.
-function damageVerdict(c) {
-  const scenarios = c.their_primary_scenarios || [];
-  const move = c.their_primary_move;
-
-  if (scenarios.length === 0) {
-    // Every calc for this cell failed to resolve — nothing to name.
-    return c.they_ohko_us ? 'DIES (damage calc unresolved)' : `survives (worst ${c.their_best_damage}%, damage calc unresolved)`;
-  }
-
-  if (scenarios.length === 1) {
-    const [s] = scenarios;
-    return c.they_ohko_us
-      ? `DIES to ${move} (${s.range})`
-      : `survives (worst ${c.their_best_damage}%, ${move})`;
-  }
-
-  // Weather changes this move's number — every displayed scenario shown
-  // together on the verdict line so a number is never separated from the
-  // weather (and resolved type, for Weather Ball/Terrain Pulse) it belongs
-  // to. The scoring scenario is always first (scenariosByMove preserves
-  // insertion order from archetype_matchups.js).
-  const label = (s) => `${s.type_changed ? `${s.resolved_type} ` : ''}in ${s.source} ${s.range} (${s.ohko ? 'KO' : 'no KO'})`;
-
-  if (c.they_ohko_us) {
-    return `DIES to ${move} — ${scenarios.map(label).join(' / ')}`;
-  }
-  // Survives overall, but the worst number came from a weather-dependent
-  // scenario — name that one scenario rather than the whole list, since
-  // "worst" refers to a single figure, not a family of them.
-  const worst = scenarios.reduce((a, b) => (b.max > a.max ? b : a));
-  const worstLabel = worst.type_changed ? `${worst.resolved_type} in ${worst.source}` : worst.source;
-  return `survives (worst ${c.their_best_damage}%, ${move}, ${worstLabel})`;
-}
-
 // Renders the three kinds of answer to a shared weakness on their own labelled
 // lines. They are deliberately not merged into one sentence: a resist buys a
 // turn, super effective damage trades, and an OHKO removes the threat outright —
@@ -843,6 +795,41 @@ function buildFrequencyNote(threshold) {
   const speciesName = vsMatch ? vsMatch[1] : extractAttackerName(threshold);
   return speciesName ? `, ${freqPct}% of ${speciesName}` : '';
 }
+// Weather-tag rendering, shared by every threshold category that carries
+// primary_weather/alt_weathers (see spread_scorer.js's scoreSpread — both the
+// DEFENSIVE and OFFENSIVE branches populate these the same way). source is
+// unset for a weather WE also set (an alternative on our own team) and
+// 'opponent' for the attacker's own weather-setting ability — primary_weather
+// itself is always ours, since it's the team's own scoring weather.
+function weatherLabel(weather, source) {
+  return source === 'opponent' ? `their ${weather}` : `our ${weather}`;
+}
+const KO_VERB_FOR_TIER = { OHKO: 'OHKO', '2HKO': '2HKO', '3HKO': '3HKO', '4HKO': '4HKO' };
+function weatherAltTrailer(t) {
+  if (!t.alt_weathers || t.alt_weathers.length === 0) return '';
+  const parts = t.alt_weathers.map((a) => {
+    const verb = KO_VERB_FOR_TIER[a.this_spread_ko] || 'survives';
+    const range = typeof a.weighted_damage_min === 'number' ? ` (${a.weighted_damage_min}-${a.weighted_damage_max}%)` : '';
+    return `in ${weatherLabel(a.weather, a.source)}: ${verb}${range}`;
+  });
+  return `; ${parts.join('; ')}`;
+}
+function weatherTagFor(t) {
+  return t.primary_weather ? ` in ${weatherLabel(t.primary_weather, null)}` : '';
+}
+function accuracyNoteSuffix(t) {
+  return t.accuracy_note ? `, ${t.accuracy_note}` : '';
+}
+// Offensive lines put the move name directly before the damage parenthetical
+// ("... with Solar Beam (100.5-119%...)"), and a test (api.test.js) parses
+// that move name by matching up to the first "(" — so the weather tag here
+// needs its OWN parenthesis rather than weatherTagFor's bare "in our Sun"
+// prose (which is correct for defensive lines, where nothing parses the move
+// name out of the threat string the same way).
+function weatherTagParenFor(t) {
+  return t.primary_weather ? ` (in ${weatherLabel(t.primary_weather, null)})` : '';
+}
+
 // Speed thresholds are only as reliable as how often the target actually runs
 // the exact Speed value the threshold assumes — a target's MOST common Speed
 // tier (topTier in scoreSpread) can still be a minority of its real spreads.
@@ -870,12 +857,18 @@ function describeThresholdForWhy(t, allDefensiveThresholds, statKey) {
   if (t.category === 'defensive') {
     const recoilText = buildRecoilText(extractMoveName(t), t.weighted_damage_min || 0, t.weighted_damage_max || 0);
     const freqNote = buildFrequencyNote(t);
+    const weatherTag = weatherTagFor(t);
+    const accNote = accuracyNoteSuffix(t);
     let primaryText;
     if (t.attacker_build && typeof t.weighted_damage_min === 'number') {
-      primaryText = `survives ${t.threat} (${t.attacker_build}: ${t.weighted_damage_min}-${t.weighted_damage_max}%${recoilText}${freqNote})`;
+      primaryText = `survives ${t.threat}${weatherTag} (${t.attacker_build}: ${t.weighted_damage_min}-${t.weighted_damage_max}%${recoilText}${accNote}${freqNote})`;
     } else {
-      primaryText = `survives ${t.threat} (${t.this_spread_ko}${recoilText}${freqNote})`;
+      primaryText = `survives ${t.threat}${weatherTag} (${t.this_spread_ko}${recoilText}${accNote}${freqNote})`;
     }
+    // A survival that a live alternate weather turns into a worse (or better)
+    // KO tier is never allowed to read as unconditional — the trailer is
+    // appended directly onto the primary line, never buried elsewhere.
+    primaryText += weatherAltTrailer(t);
 
     // FIX 4: secondary interactions — top 4 closest-to-OHKO, ordered by max damage descending
     if (allDefensiveThresholds && statKey) {
@@ -900,7 +893,9 @@ function describeThresholdForWhy(t, allDefensiveThresholds, statKey) {
           const buildLabel = th.attacker_build ? `, ${th.attacker_build}` : '';
           const secRecoil = buildRecoilText(th.moveName, th.weighted_damage_min || 0, th.weighted_damage_max || 0);
           const secFreq = buildFrequencyNote(th);
-          return `${th.attackerName} ${th.moveName} (${range}${buildLabel}${secRecoil}${secFreq})`;
+          const secWeatherTag = weatherTagFor(th);
+          const secAccNote = accuracyNoteSuffix(th);
+          return `${th.attackerName} ${th.moveName}${secWeatherTag} (${range}${buildLabel}${secRecoil}${secAccNote}${secFreq})${weatherAltTrailer(th)}`;
         });
         return `${primaryText}\n     [also: ${secondaryParts.join(' | ')}]`;
       }
@@ -930,19 +925,20 @@ function describeThresholdForWhy(t, allDefensiveThresholds, statKey) {
       const recoilPart = buildRecoilText(moveName, t.weighted_damage_min || 0, t.weighted_damage_max || 0);
       const buildLabel = t.attacker_build ? `${t.attacker_build}: ` : '';
       // Weather annotation: when the threshold was computed under a specific
-      // weather (and the team has multiple weathers), annotate the primary
-      // result and surface alternative-weather outcomes.
+      // weather, annotate the primary result — regardless of whether an
+      // alternative exists to contrast it with, so the reader always knows
+      // which board state a weather-sensitive number assumes — and surface
+      // alternative-weather outcomes.
       let result = `${t.this_spread_ko}s ${targetName} with ${moveName}`;
-      const hasWeatherContext = t.alt_weathers && t.alt_weathers.length > 0;
-      const primaryWeatherLabel = t.primary_weather && hasWeatherContext ? ` (${t.primary_weather})` : '';
-      result += primaryWeatherLabel;
+      result += weatherTagParenFor(t);
+      result += accuracyNoteSuffix(t);
       if (range) {
         result += ` (${buildLabel}${range}${recoilPart} vs ${defDescription}${offFreqNote})`;
       }
-      if (hasWeatherContext) {
+      if (t.alt_weathers && t.alt_weathers.length > 0) {
         const altParts = t.alt_weathers
           .filter(a => a.this_spread_ko && a.weighted_damage_min)
-          .map(a => `also in ${a.weather}: ${a.this_spread_ko}s (${a.weighted_damage_min}-${a.weighted_damage_max}% vs ${defDescription})`);
+          .map(a => `also in ${weatherLabel(a.weather, a.source)}: ${a.this_spread_ko}s (${a.weighted_damage_min}-${a.weighted_damage_max}% vs ${defDescription})`);
         if (altParts.length > 0) result += `; ${altParts.join('; ')}`;
       }
       return result;
@@ -1075,8 +1071,41 @@ function buildSpAllocationWhy(member) {
   return lines;
 }
 
+// Every per-line weather tag below ("in our Sun", "in their Rain") refers back
+// to this one summary — stated once, near the top, so a bare damage number
+// with NO tag has a defined meaning (weather doesn't change it) instead of
+// silence meaning "weather was not considered". setters/by_weather come from
+// analyzeWeather(); assumed_weather is set per-member in the route handler
+// (see fieldOptsForMember) and is the weather each member's OWN Why-block
+// calcs were computed under.
+function buildWeatherSummary(ta, team) {
+  const lines = [];
+  const weather = ta.weather || { setters: [], by_weather: {} };
+  if ((weather.setters || []).length === 0) {
+    lines.push('Team weather: none — no weather setter on this team; every damage figure below assumes neutral field conditions.');
+    return lines;
+  }
+  const setterParts = weather.setters.map((s) => `${s.pokemon} (${s.ability} — ${s.weather})`);
+  lines.push(`Team weather: ${setterParts.join(', ')}.`);
+  const liveWeathers = Object.keys(weather.by_weather || {});
+  if (liveWeathers.length > 1) {
+    lines.push(`  Multiple weathers are live on this team (${liveWeathers.join(', ')}) — a figure below tagged "in our X" was computed under that specific weather, not necessarily the others.`);
+  }
+  const perMember = team
+    .filter((m) => m.assumed_weather)
+    .map((m) => `${m.pokemon}: ${m.assumed_weather}`);
+  if (perMember.length > 0) {
+    lines.push(`  Each member's own damage figures assume: ${perMember.join(', ')}.`);
+  }
+  lines.push('  A damage figure with no weather tag means weather cannot change that number (move type, or a non-weather-sensitive interaction) — not that weather was ignored.');
+  return lines;
+}
+
 function buildTeamBuildText(responseBody, team) {
   const lines = [];
+
+  lines.push(...buildWeatherSummary(responseBody.team_analysis, team));
+  lines.push('');
 
   for (const member of team) {
     lines.push(`${member.pokemon} @ ${member.item}`);
@@ -1214,354 +1243,6 @@ function buildTeamBuildText(responseBody, team) {
       lines.push(`  - ${d.type}: ${d.team_members.join(', ')}`);
       lines.push(...mitigationLines(d, '    '));
     }
-  }
-  lines.push('');
-
-  lines.push(sectionDivider('ARCHETYPE MATCHUPS'));
-  for (const m of responseBody.archetype_matchups) {
-    const led = m.matchup_ledger;
-    const scoreNote = led ? `  [${(led.weighted_score * 100).toFixed(0)}/100 usage-weighted]` : '';
-    lines.push(`${m.archetype}: ${m.matchup_rating.toUpperCase()}${scoreNote}  (${m.meta_team_count} teams in this archetype)`);
-    if (led) {
-      // The full grid, printed so the rating can be argued with rather than
-      // taken on trust. Every one of our 6 against every threat: the old
-      // three-boolean ledger collapsed this and hid the fact that two of Sand's
-      // six OHKO our only Mega while the row still read "survive:Y" because
-      // Kingambit happened to live.
-      const cw = led.cell_weights || {};
-      const asum = led.assumptions || {};
-      const weatherAssumption = asum.score_weather ? `${asum.score_weather} (${asum.score_weather_source})` : 'no weather';
-      const tailwindAssumption = asum.our_tailwind_available
-        ? 'we can bring Tailwind (4 turns, not persistent) — flips shown per-cell only where they change move order'
-        : 'no Tailwind on this team';
-      lines.push(`  Exchange grid (${cw.we_ohko} we KO + ${cw.we_survive} we live + ${cw.speed} speed, speed x${cw.speed_matters_mult} if it lands a KO, x${cw.speed_decides_mult} if it also denies theirs; rows weighted by team value):`);
-      lines.push(`    Assumes: scored under ${weatherAssumption}; ${tailwindAssumption}. Other plausible weathers (${(asum.weathers_considered || []).join(', ') || 'none'}) are shown per-cell only where they'd change a number.`);
-      for (const r of led.rows) {
-        lines.push(`    ${r.pokemon.padEnd(22)} ${(r.usage * 100).toFixed(1).padStart(5)}%  -> ${r.score.toFixed(2)}`);
-        const kills = r.ohkos_our.length ? `KOs ours: ${r.ohkos_our.join(', ')}` : 'KOs none of ours';
-        const dies = r.ohko_d_by_our.length ? `KO'd by: ${r.ohko_d_by_our.join(', ')}` : "we KO it with nothing";
-        lines.push(`        ${kills}  |  ${dies}`);
-        for (const c of r.cells) {
-          const speedBits = [];
-          if (c.our_speed_note) speedBits.push(`our ${c.our_speed_note}`);
-          if (c.their_speed_note) speedBits.push(`their ${c.their_speed_note}`);
-          const speedTag = speedBits.length ? `, ${speedBits.join(', ')}` : '';
-          const speedMark = c.we_move_first === null
-            ? 'speed unknown'
-            : `moves ${c.we_move_first ? 'first' : 'second'} (${c.our_speed} vs ${c.their_speed}${speedTag})`;
-          const marks = [
-            damageVerdict(c),
-            c.we_ohko_them ? `KOs back with ${c.our_killing_move?.move}` : 'no KO back',
-            speedMark,
-          ];
-          lines.push(`          ${c.our.padEnd(20)} ${marks.join(' | ')}`);
-          if (c.tailwind_scenario) {
-            const tw = c.tailwind_scenario;
-            lines.push(`              under ${tw.side === 'ours' ? 'our' : 'their'} Tailwind: moves ${tw.we_move_first ? 'first' : 'second'} (${tw.our_speed} vs ${tw.their_speed})`);
-          }
-        }
-      }
-      if (led.weakest_link) {
-        const wl = led.weakest_link;
-        const combined = Math.min(100, wl.usage_sum * 100);
-        lines.push(`    weakest link: ${wl.pokemon} — dies to ${wl.threat_count} of their 6 most-used (${combined.toFixed(0)}% combined usage, capped at 100)`);
-      }
-      if (led.calc_failures > 0) {
-        lines.push(`    (${led.calc_failures} incoming calcs failed to resolve — grid is thinner than it looks)`);
-      }
-    }
-    lines.push(`  Our key Pokemon: ${(m.our_key_pokemon || []).join(', ')}`);
-
-    lines.push('  Key Threats:');
-    if ((m.key_threats_skipped_for_missing_species || []).length > 0) {
-      lines.push(`    (${m.key_threats_skipped_for_missing_species.length} usage-qualified species skipped — no pokemon table row: ${m.key_threats_skipped_for_missing_species.join(', ')})`);
-    }
-    for (const t of m.key_threats || []) {
-      const speed = t.speed != null ? `${t.speed} Spe` : 'Speed unknown';
-      lines.push(`    - ${t.pokemon} (${t.types.join('/')}, ${(t.usage * 100).toFixed(1)}% of ${m.archetype} teams, ${speed}${t.ability ? `, ${t.ability}` : ''}${t.item ? `, ${t.item}` : ''})`);
-      for (const r of t.reasons || []) lines.push(`        ${r}`);
-      // The hardest set behind each KO, so "OHKOs Charizard" can be read as a
-      // frequency rather than a possibility.
-      for (const o of t.ohkos_our || []) {
-        if (o.coverage?.hardest_set) {
-          lines.push(`            worst case on ${o.our}: ${o.coverage.hardest_set.label} — ${o.coverage.hardest_set.range}`);
-        }
-      }
-    }
-
-    // Both lists are ordered most damage first, then by how common the opposing
-    // Pokemon is.
-    lines.push('  Resistances (most damage taken first):');
-    if ((m.resistances || []).length === 0) {
-      lines.push('    - none — nothing on this team resists their primary attacking moves');
-    } else {
-      for (const r of m.resistances) {
-        lines.push(`    - ${r.pokemon}:`);
-        for (const x of r.resists) {
-          const mult = x.multiplier === 0 ? 'immune' : `${x.multiplier}x`;
-          lines.push(`        ${x.target}'s ${x.move} (${x.move_type}, ${mult}): ${x.damage_range} — ${x.attacker_build}, ${(x.target_usage * 100).toFixed(1)}% of ${m.archetype} teams`);
-          // Same state-dependent-move treatment as Counters below: a resisted
-          // hit from a ladder move is still a ladder, not a flat number.
-          if (x.ladder) {
-            lines.push(`            base power scales with ${x.ladder.axis}:`);
-            for (const step of x.ladder.steps) {
-              const ko = step.ohko ? '  OHKO' : '';
-              lines.push(`              ${step.note} (${step.bp} BP): ${step.damage_range}${ko}   [likelihood ${step.weight}]`);
-            }
-          }
-          if (x.multi_hit) {
-            const mh = x.multi_hit;
-            lines.push(`            ${mh.note} — headline above is the EXPECTED ${mh.expected_hits} hits`);
-            lines.push(`            guaranteed floor (${mh.guaranteed_min_percent}-${mh.guaranteed_max_percent}%) is what a move swap is judged on`);
-            for (const row of mh.hit_counts || []) {
-              const ko = row.ohko ? '  OHKO' : '';
-              lines.push(`              ${row.hits} hit${row.hits === 1 ? '' : 's'} (${(row.probability * 100).toFixed(1)}%): ${row.min_percent}-${row.max_percent}%${ko}`);
-            }
-          }
-          if (x.bp_unresolved) {
-            lines.push('            WARNING: this move\'s real base power depends on state not modelled here');
-            lines.push(`            (multi-hit or turn state) — the number above assumes ${x.base_power_used} BP and is not reliable`);
-          }
-        }
-      }
-    }
-
-    lines.push('  Counters (most damage first):');
-    const ohkos = m.counters?.ohkos || [];
-    const seOnly = (m.counters?.super_effective || []);
-    if (ohkos.length === 0 && seOnly.length === 0) {
-      const cf = m.counters?.calc_failures || 0;
-      const ca = m.counters?.calc_attempts || 0;
-      // Distinguish "genuinely no answer" from "the calcs did not run" — those
-      // printed identically before, which hid a resolution bug for a full build.
-      lines.push(cf > 0 && cf === ca
-        ? `    - NO DATA — all ${ca} damage calculations failed to resolve; this is a bug, not a matchup result`
-        : '    - none — no OHKO and no super effective coverage against their key threats');
-    } else if ((m.counters?.calc_failures || 0) > 0) {
-      lines.push(`    (${m.counters.calc_failures}/${m.counters.calc_attempts} calcs failed to resolve)`);
-    }
-    // Grouped by OUR Pokemon, mirroring the Resistances layout. A flat list
-    // interleaves six attackers against six targets and is unreadable; grouping
-    // answers "what does this member do here" in one block.
-    const byAttacker = new Map();
-    for (const e of [...ohkos.map((o) => ({ ...o, ohko: true })), ...seOnly.map((x) => ({ ...x, ohko: false }))]) {
-      if (!byAttacker.has(e.pokemon)) byAttacker.set(e.pokemon, []);
-      byAttacker.get(e.pokemon).push(e);
-    }
-    const attackerGroups = [...byAttacker.entries()].map(([pokemon, entries]) => {
-      entries.sort((a, b) => (b.damage_max || 0) - (a.damage_max || 0)
-        || (b.target_usage || 0) - (a.target_usage || 0));
-      return { pokemon, entries };
-    });
-    // Members with the hardest single hit first, same rule as within a group.
-    attackerGroups.sort((a, b) => (b.entries[0].damage_max || 0) - (a.entries[0].damage_max || 0));
-
-    for (const g of attackerGroups) {
-      lines.push(`    - ${g.pokemon}:`);
-      for (const e of g.entries) {
-        // Sash-capped hits used to print as "2x ... 99.3-99.3%", which reads as
-        // a coincidence rather than "this would have killed and the Sash held".
-        const sashHeld = e.sash_prevents_ohko === true;
-        const tag = sashHeld ? 'SASH HOLDS' : (e.ohko ? 'OHKO' : `${e.multiplier}x`);
-        const type = e.move_type ? `, ${e.move_type}` : '';
-        // Weather is named only when it CHANGES something — a tag on a number
-        // that is identical in every weather reads as one calc asserting two
-        // contradictory weathers at once.
-        const wx = e.weather_independent
-          ? ''
-          : ((e.weathers && e.weathers.length > 0)
-            ? `  [${e.weathers.join(' / ')}]`
-            : (e.weather ? `  [in ${e.weather}]` : '  [no weather]'));
-        // Attacker named on every line. The group header above scrolls out of
-        // sight in a section this long, and "Sucker Punch vs Basculegion" with
-        // no attacker is unusable.
-        lines.push(`        ${tag} — ${g.pokemon}'s ${e.move}${type} vs ${e.target}: ${e.damage_range} vs ${e.target_build}, ${(e.target_usage * 100).toFixed(1)}% of ${m.archetype} teams${wx}`);
-        if (sashHeld) {
-          lines.push(`            would do ${e.raw_min_percent ?? '?'}-${e.raw_max_percent ?? '?'}% — Focus Sash holds it at 1 HP (once, from full HP only)`);
-        }
-        if (e.coverage) {
-          const c = e.coverage;
-          // The headline is the SHARE OF SETS BEATEN and the THRESHOLD that stops
-          // it — not how common one particular spread is. Quoting the modal
-          // spread's frequency read as "this KO works 11% of the time" when the
-          // move in fact beat most of the frailer spreads too.
-          const across = `across ${c.sets_seen} spread${c.sets_seen === 1 ? '' : 's'} x ${c.items_seen} item${c.items_seen === 1 ? '' : 's'}`;
-          lines.push(`            KOs ${(c.covered_pct * 100).toFixed(0)}% of observed sets (${across})`);
-          if (c.breaks_on) {
-            lines.push(`            stops KOing at ${c.breaks_on.label} — ${c.breaks_on.range}`);
-          } else if (c.covered_pct >= 1) {
-            lines.push('            no observed set survives it');
-          }
-          if (c.worst_beaten) {
-            lines.push(`            still KOs through ${c.worst_beaten.label} (${c.worst_beaten.range})`);
-          }
-        }
-        // A move whose power depends on battle state has no single number, so
-        // print the whole sequence with how likely each step is. The headline
-        // above is always the guaranteed step.
-        if (e.ladder) {
-          lines.push(`            base power scales with ${e.ladder.axis}:`);
-          for (const step of e.ladder.steps) {
-            const ko = step.ohko ? '  OHKO' : '';
-            lines.push(`              ${step.note} (${step.bp} BP): ${step.damage_range}${ko}   [likelihood ${step.weight}]`);
-          }
-        }
-        // Multi-hit: the headline is one figure, but the move rolls a hit count
-        // every time. Print the distribution rather than a single number that
-        // happens to be true on average and never on any given turn.
-        if (e.multi_hit) {
-          const mh = e.multi_hit;
-          lines.push(`            ${mh.note} — headline above is the EXPECTED ${mh.expected_hits} hits`);
-          lines.push(`            guaranteed floor (${mh.guaranteed_min_percent}-${mh.guaranteed_max_percent}%) is what a move swap is judged on`);
-          for (const row of mh.hit_counts || []) {
-            const ko = row.ohko ? '  OHKO' : '';
-            lines.push(`              ${row.hits} hit${row.hits === 1 ? '' : 's'} (${(row.probability * 100).toFixed(1)}%): ${row.min_percent}-${row.max_percent}%${ko}`);
-          }
-        }
-        if (e.bp_unresolved) {
-          lines.push('            WARNING: this move\'s real base power depends on state not modelled here');
-          lines.push(`            (multi-hit or turn state) — the number above assumes ${e.base_power_used} BP and is not reliable`);
-        }
-      }
-    }
-
-    // A condition may carry a second line (an OHKO's KO-likelihood note). Bullet
-    // the first line, indent the rest under it — one \n-joined string stays one
-    // logical condition in the JSON while reading as a block in the text view.
-    const pushCondition = (text) => {
-      const [head, ...rest] = String(text).split('\n');
-      lines.push(`    - ${head}`);
-      for (const extra of rest) lines.push(`        ${extra}`);
-    };
-
-    lines.push('  Lose Condition:');
-    for (const l of m.lose_conditions || []) pushCondition(l);
-
-    lines.push('  Win Condition:');
-    if ((m.win_conditions || []).length === 0) lines.push('    - none identified from the current 6');
-    for (const w of m.win_conditions || []) pushCondition(w);
-
-    const sw = m.possible_swaps;
-    if (sw && (sw.moves.length || sw.items.length || sw.pokemon.length || sw.error)) {
-      lines.push('  Possible Swaps:');
-      if (sw.error) lines.push(`    - swap analysis failed: ${sw.error}`);
-      if (sw.moves.length > 0) {
-        lines.push('    Moves:');
-        for (const x of sw.moves) {
-          lines.push(`      - ${x.pokemon}: ${x.drop} -> ${x.add} (${x.move_type}, ${x.move_power} BP)`);
-          lines.push(`          vs ${x.target}: ${x.damage_range}${x.ohko ? ' OHKO' : ''} — beats current best (${x.replaces_best || 'nothing'} at ${x.replaces_best_damage}%) by ${x.gain.toFixed(1)} points`);
-          lines.push(`          ${x.reason}`);
-        }
-      }
-      if (sw.items.length === 0 && (sw.items_skipped || []).length > 0) {
-        lines.push(`    Items: none — ${sw.items_skipped.join(', ')}`);
-      }
-      if (sw.items.length > 0) {
-        lines.push('    Items:');
-        for (const x of sw.items) {
-          lines.push(`      - ${x.pokemon}: ${x.drop} -> ${x.add}`);
-          lines.push(`          new spread: ${x.new_spread}${x.respread_ran ? '' : '  (WARNING: re-optimisation did not run, spread shown is unchanged)'}`);
-          for (const s2 of x.now_survives) lines.push(`          now survives: ${s2}`);
-          for (const l of x.loses_ohko_on) lines.push(`          loses OHKO on: ${l}`);
-          if (x.loses_ohko_on.length === 0) lines.push('          loses no OHKOs');
-        }
-      }
-      if (sw.pokemon.length > 0) {
-        lines.push('    Pokemon:');
-        for (const x of sw.pokemon) {
-          const role = x.add_role?.role ? `, ${x.add_role.role}` : '';
-          lines.push(`      - drop ${x.drop}${x.drop_role?.role ? ` (${x.drop_role.role})` : ''}, bring ${x.add} (${x.add_types.join('/')}${role}, ${(x.add_usage * 100).toFixed(1)}% usage)`);
-
-          // The set the numbers below were actually computed on. Without this
-          // the comparison is unfalsifiable.
-          const b = x.add_build;
-          if (b) {
-            lines.push(`          set: ${b.spread_label || '(spread unknown)'} @ ${b.item || 'no item'}${b.ability ? ` (${b.ability})` : ''}  [${b.spread_source || 'source unknown'}]${b.build_provenance ? ` (${b.build_provenance})` : ''}`);
-            if ((b.moves || []).length > 0) {
-              lines.push(`          moves: ${b.moves.map((mv) => mv.move).join(' / ')}${b.moves_truncated ? ' (+ more)' : ''}`);
-            }
-          }
-          lines.push(`          ${x.reason}`);
-
-          const d = x.delta;
-          if (d) {
-            for (const gain of d.gains_ohko_on || []) {
-              lines.push(`          GAINS a KO on ${gain.threat} (${(gain.usage * 100).toFixed(1)}%): ${gain.move} ${gain.damage_range}${gain.dropped_best_move ? ` — ${x.drop}'s best was ${gain.dropped_best_move} at ${gain.dropped_best_min}%` : ''}`);
-            }
-            for (const loss of d.loses_ohko_on || []) {
-              lines.push(`          GIVES UP the KO on ${loss.threat} (${(loss.usage * 100).toFixed(1)}%): ${x.drop}'s ${loss.move} ${loss.damage_range}${loss.candidate_best_move ? ` — ${x.add}'s best is ${loss.candidate_best_move} at ${loss.candidate_best_min}%` : ''}`);
-            }
-            for (const s of d.newly_survives || []) {
-              lines.push(`          NEWLY SURVIVES ${s.threat}'s ${s.move}: ${s.candidate_range} on ${x.add} vs ${s.dropped_range} on ${x.drop}`);
-            }
-            for (const v of d.newly_vulnerable || []) {
-              lines.push(`          NEWLY DIES to ${v.threat}'s ${v.move}: ${v.candidate_range} on ${x.add} vs ${v.dropped_range} on ${x.drop}`);
-            }
-            const tr = d.truncated || {};
-            if (tr.gains_ohko_on || tr.loses_ohko_on || tr.newly_survives || tr.newly_vulnerable) {
-              lines.push(`          (lists capped — totals: +${d.totals.gains_ohko_on} KOs / -${d.totals.loses_ohko_on} KOs / +${d.totals.newly_survives} survived / -${d.totals.newly_vulnerable} newly lost)`);
-            }
-            if (d.calc_failures > 0) lines.push(`          (${d.calc_failures} calcs in this comparison failed to resolve)`);
-          }
-
-          // Screens and Intimidate are the whole argument for some swaps, so
-          // they are recomputed rather than asserted.
-          const fe = x.field_effects;
-          if (fe && (fe.new_effects || []).length > 0) {
-            lines.push(`          BRINGS ${fe.new_effects.join(', ')}:`);
-            for (const rc of fe.recomputes || []) {
-              const broken = rc.before_ohko && !rc.after_ohko ? '  (no longer an OHKO)' : '';
-              lines.push(`            ${rc.effect} vs ${rc.attacker}'s ${rc.move} on ${rc.defender}: ${rc.before_range} -> ${rc.after_range}${broken}`);
-            }
-            if (fe.recomputes_truncated) lines.push(`            (${fe.recomputes_total} recomputes total, list capped)`);
-            for (const cv of fe.caveats || []) lines.push(`            note: ${cv}`);
-          }
-
-          if ((x.loses || []).length > 0) lines.push(`          dropping ${x.drop} costs: ${x.loses.join('; ')}`);
-
-          // What the drop costs that nothing left on the team replaces, and
-          // whether anything in the whole legal pool covers it.
-          const bf = x.backfill;
-          if (bf && !bf.nothing_lost) {
-            for (const loss of bf.losses || []) {
-              lines.push(`          IRREPLACEABLE: ${loss.detail || loss.what}`);
-              lines.push(`            ${loss.statement}`);
-              for (const rep of loss.replacements || []) {
-                const dmg = rep.damage_range ? `: ${rep.move} ${rep.damage_range}` : ` — ${rep.move}`;
-                const prov = rep.build_provenance ? ` (${rep.build_provenance})` : '';
-                lines.push(`              ${rep.pokemon} (${(rep.usage * 100).toFixed(1)}% usage)${dmg}${prov}`);
-              }
-            }
-            if (bf.losses_truncated) lines.push(`            (${bf.losses_total} irreplaceable losses total, list capped)`);
-          }
-          if (x.candidates_real_evaluated) {
-            lines.push(`          (chosen from ${x.candidates_real_evaluated} candidates real-calced against this archetype)`);
-          }
-        }
-      }
-      // Members the matchup maths wanted to cut but that hold irreplaceable team
-      // roles — named so the absence of a suggestion is explained, not silent.
-      if ((sw.pokemon_protected || []).length > 0) {
-        lines.push('    Not droppable despite a poor matchup here:');
-        for (const p2 of sw.pokemon_protected) lines.push(`      - ${p2}`);
-      }
-      if (sw.bounds) {
-        // "legal Pokemon considered" used to print a hard-coded 40 and read as a
-        // fact about the format. It is the size of the pool we searched, and it
-        // now says which part of that pool produced a usable candidate.
-        const misses = sw.bounds.pokemon_pool_profile_misses
-          ? `, ${sw.bounds.pokemon_pool_profile_misses} skipped for missing species data`
-          : '';
-        lines.push(`    (bounds: max ${sw.bounds.max_move_swaps} move / ${sw.bounds.max_item_swaps} item / ${sw.bounds.max_pokemon_swaps} Pokemon swaps; ${sw.bounds.item_candidates_per_member} item candidates per member; searched all ${sw.bounds.pokemon_pool_considered} legal Pokemon, ${sw.bounds.pokemon_pool_scored} scored as viable${misses})`);
-      }
-    }
-
-    if (m.best_team_set) {
-      const b = m.best_team_set;
-      lines.push(`  Best Team Set: ${b.members.join(', ')}${b.mega ? `  (Mega: ${b.mega})` : '  (no Mega available)'}`);
-      lines.push(`    weighted ${(b.score * 100).toFixed(1)} — synergy ${(b.breakdown.synergy * 100).toFixed(0)}, offence ${(b.breakdown.offense * 100).toFixed(0)}, defence ${(b.breakdown.defense * 100).toFixed(0)}, speed ${(b.breakdown.speed * 100).toFixed(0)}, utility ${(b.breakdown.utility * 100).toFixed(0)}`);
-    }
-    lines.push('');
   }
   lines.push('');
 
@@ -1940,6 +1621,11 @@ router.post('/build', async (req, res, next) => {
         base_ability: baseAbility,
         item: assignment.item,
         item_assignment: assignment,
+        // The weather this member's own Why-block damage calcs were computed
+        // under (see fieldOptsForMember above) — surfaced so the report can
+        // state it once near the top rather than leaving every per-line weather
+        // tag without a stated referent.
+        assumed_weather: fieldOptsForMember(i).weather,
         nature: evo?.nature || 'Hardy',
         sp: topSpread?.sp || ZERO_SP,
         final_stats: topSpread?.final_stats || null,
@@ -2018,22 +1704,28 @@ router.post('/build', async (req, res, next) => {
       ? `Only ${protectCount}/6 team members carry Protect — Protect is nearly universal in VGC doubles; consider adding more`
       : null;
 
-    // STEP 7: weaknesses + archetype matchups (FIX 11: key_threats filtered to
-    // Pokemon with real presence in this format's usage_stats).
+    // STEP 7: weaknesses (FIX 11: key_threats filtered to Pokemon with real
+    // presence in this format's usage_stats).
     const weaknesses = await analyzeWeaknesses(team, typeMetaData, teamWeatherContext, allOhkoOpportunities);
-    // Live, data-derived archetype analysis (see archetype_matchups.js). The old
-    // analyzeArchetypeMatchups used a static table whose hardcoded
-    // `key_threat_speed` was printed against whichever threat was listed first —
-    // the source of the impossible "Charizard-Mega-Y (~185 effective Speed)".
-    const archetypeMatchups = await analyzeArchetypeMatchupsLive(team, weather, synergies, legalPokemonSet, { weather: [...(teamWeatherContext || [])][0] || null });
-
-    // Simple, disclosed aggregate: equal-weighted average of three already-computed
-    // real signals (type-coverage completeness, real synergy-pair count, favorable
-    // archetype-matchup ratio) — not an opaque ML score, just a transparent summary.
+    // The live, data-derived per-archetype analysis (archetype_matchups.js —
+    // exchange grid, key threats, resistances, counters, possible swaps, best
+    // team set) used to be computed here on every build and rendered as the
+    // ARCHETYPE MATCHUPS text section. Per owner decision (2026-08-31,
+    // weather_labels task): that section is removed from the text report, and
+    // team_score no longer factors in a favorable-archetype-ratio signal — so
+    // analyzeArchetypeMatchupsLive() is no longer called at all here. It ran a
+    // real damage calc (buildExchangeGrid) per member per threat per archetype
+    // per plausible weather, which was most of this endpoint's runtime; nothing
+    // in this route still needs its output. The function itself, and
+    // archetype_swaps.js, are untouched and still callable — only this one
+    // call site was removed.
+    //
+    // Simple, disclosed aggregate: equal-weighted average of two already-computed
+    // real signals (type-coverage completeness, real synergy-pair count) — not
+    // an opaque ML score, just a transparent summary.
     const coverageRatio = coverage.covered_types.length / 18;
     const synergyRatio = Math.min(synergies.length / 5, 1);
-    const archetypeRatio = archetypeMatchups.filter((a) => a.matchup_rating === 'favorable').length / archetypeMatchups.length;
-    const teamScore = round((coverageRatio + synergyRatio + archetypeRatio) / 3, 4);
+    const teamScore = round((coverageRatio + synergyRatio) / 2, 4);
 
     const teamNotes = [];
     if (synergies.length > 0) {
@@ -2056,6 +1748,7 @@ router.post('/build', async (req, res, next) => {
         base_ability: m.base_ability,
         item: m.item,
         item_reason: m.item_reason,
+        assumed_weather: m.assumed_weather,
         nature: m.nature,
         sp: m.sp,
         final_stats: m.final_stats,
@@ -2076,7 +1769,6 @@ router.post('/build', async (req, res, next) => {
         coverage_suggestions: coverageSuggestions,
       },
       weaknesses,
-      archetype_matchups: archetypeMatchups,
       matchup_analysis: matchupAnalysis,
       team_score: teamScore,
       team_notes: teamNotes,

@@ -564,7 +564,10 @@ Careful Nature
     }
 
     assert(body.team_analysis && body.team_analysis.coverage, 'Expected team_analysis.coverage to be present');
-    assert(Array.isArray(body.archetype_matchups) && body.archetype_matchups.length >= 5, `Expected 5+ archetype matchups, got ${body.archetype_matchups?.length}`);
+    // archetype_matchups removed from this endpoint's response (weather_labels
+    // task, Task 2, 2026-08-31) — analyzeArchetypeMatchupsLive() is no longer
+    // called by this route; see the removed-tests comment further down for why.
+    assert(body.archetype_matchups === undefined, 'archetype_matchups should no longer be present on POST /api/team/build');
   });
 
   await test('POST /api/team/build with Accept: text/plain returns a Showdown-format team sheet', async () => {
@@ -578,7 +581,9 @@ Careful Nature
     assert(text.includes('@'), 'Expected Showdown-format "Species @ Item" lines');
     assert(text.includes('TEAM ANALYSIS'), 'Expected a TEAM ANALYSIS section');
     assert(text.includes('WEAKNESSES'), 'Expected a WEAKNESSES section');
-    assert(text.includes('ARCHETYPE MATCHUPS'), 'Expected an ARCHETYPE MATCHUPS section');
+    // ARCHETYPE MATCHUPS removed from this report (weather_labels task, Task 2,
+    // 2026-08-31) — asserting its absence guards against it silently coming back.
+    assert(!text.includes('ARCHETYPE MATCHUPS'), 'ARCHETYPE MATCHUPS section should no longer be rendered');
     assert(text.includes('ITEM DECISIONS'), 'Expected an ITEM DECISIONS section');
   });
 
@@ -750,58 +755,26 @@ Careful Nature
     }
   });
 
-  // --- Key threat speeds must be reachable under the SP system ---
-  // The old archetype table carried one hardcoded key_threat_speed per archetype
-  // and printed it against whichever threat was listed first, which is how
-  // "Charizard-Mega-Y (~185 effective Speed)" appeared — 185 described a
-  // Chlorophyll sweeper, and Charizard-Mega-Y's ceiling is
-  // floor((100 + 32 + 20) x 1.1) = 167.
-  await test('POST /api/team/build: no key threat is reported above its maximum possible Speed', async () => {
-    const body = await getTeamBuildResult();
-    const SPEED_DOUBLERS = new Set(['chlorophyll', 'swift swim', 'sand rush', 'slush rush', 'unburden', 'quick feet']);
-    for (const m of body.archetype_matchups) {
-      for (const t of m.key_threats || []) {
-        if (t.speed == null || t.base_speed == null) continue;
-        const ceiling = Math.floor((t.base_speed + 32 + 20) * 1.1);
-        const doubles = SPEED_DOUBLERS.has(String(t.ability || '').toLowerCase());
-        // Choice Scarf (1.5x) is a real, legitimate stack on top of the SP-max
-        // ceiling, same as an active speed-doubling ability — a real Pokemon's
-        // effective Speed genuinely can and does exceed its bare final stat.
-        // Missing here until the fix that made threat.speed a real effective
-        // speed instead of a raw base stat (see Known Issues) — under the old
-        // bug this branch was unreachable because threat.speed never got large
-        // enough to need it.
-        const scarfed = String(t.item || '').toLowerCase() === 'choice scarf';
-        const allowed = ceiling * (scarfed ? 1.5 : 1) * (doubles ? 2 : 1);
-        assert(t.speed <= allowed,
-          `${m.archetype}: ${t.pokemon} reported at ${t.speed} Spe, but base ${t.base_speed} caps at ${allowed}${doubles ? ' (ability-doubled)' : ''}${scarfed ? ' (Scarf)' : ''}`);
-      }
-    }
-  });
-
-  // --- Best Team Set brings exactly one Mega ---
-  // Only one Mega can be brought to a battle, so Megas are graded in their own
-  // bracket and the remaining three slots are filled from non-Megas.
-  await test('POST /api/team/build: every Best Team Set is 4 Pokemon with at most one Mega', async () => {
-    const body = await getTeamBuildResult();
-    const megaOnTeam = body.team.filter((m) => /-mega/i.test(m.pokemon)
-      && /ite( [xy])?$/i.test(String(m.item || '')));
-    for (const m of body.archetype_matchups) {
-      const set = m.best_team_set;
-      if (!set) continue;
-      assert(set.members.length === Math.min(4, body.team.length),
-        `${m.archetype}: Best Team Set has ${set.members.length} members`);
-      const megasInSet = set.members.filter((n) => /-mega/i.test(n));
-      assert(megasInSet.length <= 1,
-        `${m.archetype}: Best Team Set contains ${megasInSet.length} Megas — only one can be brought`);
-      if (megaOnTeam.length > 0) {
-        assert(set.mega, `${m.archetype}: team has a Mega but the set selected none`);
-        assert(set.members.includes(set.mega), `${m.archetype}: selected Mega is not in the set`);
-      }
-      assert(new Set(set.members).size === set.members.length,
-        `${m.archetype}: Best Team Set repeats a Pokemon`);
-    }
-  });
+  // --- Key threat speeds / Best Team Set Mega-count tests REMOVED (weather_labels
+  // task, Task 2, 2026-08-31) ---
+  // Both tests below this comment used to assert on `body.archetype_matchups`
+  // (key_threats' Speed ceiling; best_team_set's Mega-count invariant). Per
+  // explicit owner decision that session, the ARCHETYPE MATCHUPS text section
+  // was removed from POST /api/team/build's output, team_score dropped the
+  // favorable-archetype-ratio signal, and the route handler stopped calling
+  // analyzeArchetypeMatchupsLive() entirely — it was most of the endpoint's
+  // runtime (buildExchangeGrid runs a real damage calc per member per threat
+  // per archetype per plausible weather) and nothing left in the route needed
+  // its output. `archetype_matchups.js` and analyzeArchetypeMatchupsLive()
+  // itself are still in the repo (kept deliberately, per that session's brief),
+  // but as of this change have no caller anywhere in src/ — `body.archetype_matchups`
+  // no longer exists to assert on, so these tests could not be adapted to the
+  // new response shape, only deleted. Both invariants they checked (a key
+  // threat's Speed can never exceed its real SP-system ceiling; a Best Team
+  // Set never carries more than one Mega) are still real and worth guarding IF
+  // analyzeArchetypeMatchupsLive() is ever wired back into a live endpoint —
+  // at that point these should be re-added against that endpoint's real
+  // response, not resurrected here against a field that no longer exists.
 
   // --- Weather Ball never reported with its static Normal type ---
   // Weather Ball is stored as Normal in the moves table; its real attacking type
