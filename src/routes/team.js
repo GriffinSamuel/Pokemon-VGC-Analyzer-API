@@ -721,6 +721,53 @@ function sectionDivider(label) {
   return opening + '─'.repeat(Math.max(TEXT_DIVIDER_WIDTH - opening.length, 4));
 }
 
+// The exchange grid's primary verdict line. `their_primary_scenarios` is the
+// full list of (weather, resolved-type, range, ohko) results already computed
+// for whichever move is responsible for the verdict — always at least the
+// scoring-weather scenario, plus one entry per OTHER plausible weather that
+// could actually change this specific move's number (Known Issues / Task 2:
+// the primary damage line didn't name its weather; Task 1: "worst" wasn't the
+// worst because a bigger number from another weather never fed back in).
+//
+// A single scenario means weather genuinely cannot change this move's number
+// against this defender — no tag is printed for it, matching this report's
+// existing convention elsewhere (Counters section) of naming weather only
+// when it could have mattered, so a bracket next to every line doesn't read
+// as noise.
+function damageVerdict(c) {
+  const scenarios = c.their_primary_scenarios || [];
+  const move = c.their_primary_move;
+
+  if (scenarios.length === 0) {
+    // Every calc for this cell failed to resolve — nothing to name.
+    return c.they_ohko_us ? 'DIES (damage calc unresolved)' : `survives (worst ${c.their_best_damage}%, damage calc unresolved)`;
+  }
+
+  if (scenarios.length === 1) {
+    const [s] = scenarios;
+    return c.they_ohko_us
+      ? `DIES to ${move} (${s.range})`
+      : `survives (worst ${c.their_best_damage}%, ${move})`;
+  }
+
+  // Weather changes this move's number — every displayed scenario shown
+  // together on the verdict line so a number is never separated from the
+  // weather (and resolved type, for Weather Ball/Terrain Pulse) it belongs
+  // to. The scoring scenario is always first (scenariosByMove preserves
+  // insertion order from archetype_matchups.js).
+  const label = (s) => `${s.type_changed ? `${s.resolved_type} ` : ''}in ${s.source} ${s.range} (${s.ohko ? 'KO' : 'no KO'})`;
+
+  if (c.they_ohko_us) {
+    return `DIES to ${move} — ${scenarios.map(label).join(' / ')}`;
+  }
+  // Survives overall, but the worst number came from a weather-dependent
+  // scenario — name that one scenario rather than the whole list, since
+  // "worst" refers to a single figure, not a family of them.
+  const worst = scenarios.reduce((a, b) => (b.max > a.max ? b : a));
+  const worstLabel = worst.type_changed ? `${worst.resolved_type} in ${worst.source}` : worst.source;
+  return `survives (worst ${c.their_best_damage}%, ${move}, ${worstLabel})`;
+}
+
 // Renders the three kinds of answer to a shared weakness on their own labelled
 // lines. They are deliberately not merged into one sentence: a resist buys a
 // turn, super effective damage trades, and an OHKO removes the threat outright —
@@ -1203,7 +1250,7 @@ function buildTeamBuildText(responseBody, team) {
             ? 'speed unknown'
             : `moves ${c.we_move_first ? 'first' : 'second'} (${c.our_speed} vs ${c.their_speed}${speedTag})`;
           const marks = [
-            c.they_ohko_us ? `DIES to ${c.their_killing_move?.move} (${c.their_killing_move?.range})` : `survives (worst ${c.their_best_damage}%)`,
+            damageVerdict(c),
             c.we_ohko_them ? `KOs back with ${c.our_killing_move?.move}` : 'no KO back',
             speedMark,
           ];
@@ -1211,9 +1258,6 @@ function buildTeamBuildText(responseBody, team) {
           if (c.tailwind_scenario) {
             const tw = c.tailwind_scenario;
             lines.push(`              under ${tw.side === 'ours' ? 'our' : 'their'} Tailwind: moves ${tw.we_move_first ? 'first' : 'second'} (${tw.our_speed} vs ${tw.their_speed})`);
-          }
-          for (const alt of (c.their_damage_weather_alternates || [])) {
-            lines.push(`              ${alt.move} in ${alt.source}: ${alt.range}${alt.ohko ? ' (KO)' : ''}`);
           }
         }
       }

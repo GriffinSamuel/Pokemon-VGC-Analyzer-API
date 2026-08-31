@@ -1541,25 +1541,55 @@ async function buildExchangeGrid(team, threats, counters, archetype, weatherAnal
     const cells = [];
 
     for (const member of team) {
-      // Do they guarantee a KO on this member? Guaranteed means min >= 100 —
-      // the format owner's call. A roll that only sometimes kills is reported
-      // separately rather than counted as a kill.
-      let theyOhko = false;
-      let theirBest = 0;
-      let killingMove = null;
-      const weatherAlternates = [];
+      // Do they guarantee a KO on this member UNDER THE SCORING WEATHER?
+      // Guaranteed means min >= 100 — the format owner's call. This flag is
+      // the ONLY one that feeds the cell score below; it is deliberately kept
+      // exactly as narrow as before so scoring stays pinned to the designated
+      // scoring weather (see the comment on scoreWeather above). What CHANGED
+      // (Known Issues / Task 1: "worst" is not the worst) is that the reader-
+      // facing verdict below no longer stops at this weather — see
+      // theyOhkoAny.
+      let theyOhkoScoring = false;
+      let killingMoveScoring = null;
+      const defTypes = typesOf(member.pokemonRow);
+
+      // Every (move, weather-scenario) pair actually computed for this
+      // member, keyed by move. Built once here so the display layer can
+      // later explain whichever single move is actually responsible for the
+      // verdict — including a scenario that only shows up under a weather
+      // OTHER than the scoring one — without re-running any calc.
+      const scenariosByMove = new Map();
+      let theirBestOverall = 0;
+      let theirBestMove = null;
+      let theyOhkoAny = false;
+
       for (const moveName of threat.top_moves.slice(0, 4)) {
         const dmg = await calcThreatDamage(threat, moveName, member, scoreWeather);
         if (!dmg) { calcFailures += 1; continue; }
-        if (dmg.max > theirBest) theirBest = dmg.max;
-        if (dmg.min >= 100 && !theyOhko) { theyOhko = true; killingMove = { move: moveName, range: `${dmg.min}-${dmg.max}%` }; }
+        const moveRow = await getMoveRowCached(moveName);
+        const scoreEntry = weathers.find((w) => w.weather === scoreWeather);
+        const scoreType = resolveTypeFor(moveName, moveRow?.type, threat.ability, scoreWeather);
+        const scoringScenario = {
+          source: scoreEntry?.source || 'no weather',
+          resolved_type: scoreType,
+          type_changed: scoreType !== moveRow?.type,
+          range: `${dmg.min}-${dmg.max}%`,
+          max: dmg.max,
+          ohko: dmg.min >= 100,
+        };
+        const scenarios = [scoringScenario];
+
+        if (scoringScenario.ohko && !theyOhkoScoring) {
+          theyOhkoScoring = true;
+          killingMoveScoring = { move: moveName, range: scoringScenario.range };
+        }
+        if (scoringScenario.ohko) theyOhkoAny = true;
+        if (scoringScenario.max > theirBestOverall) { theirBestOverall = scoringScenario.max; theirBestMove = moveName; }
 
         // Only worth a second calc where weather could plausibly change THIS
         // move's number against THIS defender — the same analytical gate Key
         // Threats already uses, not a blind re-run of every move under every
         // weather (that cost is exactly what the gate exists to avoid).
-        const moveRow = await getMoveRowCached(moveName);
-        const defTypes = typesOf(member.pokemonRow);
         for (const w of weathers) {
           if (w.weather === scoreWeather) continue;
           const mattersHere = weatherChangesDamage(moveName, moveRow?.type, moveRow?.category, defTypes, w.weather)
@@ -1568,14 +1598,45 @@ async function buildExchangeGrid(team, threats, counters, archetype, weatherAnal
           const altDmg = await calcThreatDamage(threat, moveName, member, w.weather);
           if (!altDmg) continue;
           if (altDmg.min === dmg.min && altDmg.max === dmg.max) continue; // gate is conservative; this pair happens to agree
-          weatherAlternates.push({
-            move: moveName, source: w.source, range: `${altDmg.min}-${altDmg.max}%`, ohko: altDmg.min >= 100,
-          });
+          const altType = resolveTypeFor(moveName, moveRow?.type, threat.ability, w.weather);
+          const altScenario = {
+            source: w.source,
+            resolved_type: altType,
+            type_changed: altType !== moveRow?.type,
+            range: `${altDmg.min}-${altDmg.max}%`,
+            max: altDmg.max,
+            ohko: altDmg.min >= 100,
+          };
+          scenarios.push(altScenario);
+          if (altScenario.ohko) theyOhkoAny = true;
+          if (altScenario.max > theirBestOverall) { theirBestOverall = altScenario.max; theirBestMove = moveName; }
         }
+        scenariosByMove.set(moveName, scenarios);
       }
       // Focus Sash counts as surviving — the calculator already caps a single
       // hit below 100% for a Sash holder at full HP, so `min >= 100` is false
       // and this falls out for free rather than needing a special case.
+
+      // The verdict shown to the reader reflects EVERY displayed scenario,
+      // not just the scoring one — a threat that only OHKOs in one plausible
+      // weather must never render as an unconditional kill, and a "worst"
+      // number must never be smaller than a bigger number shown right below
+      // it (Known Issues / Task 1). The move explained on the verdict line is
+      // whichever move actually carries that verdict: the scoring-weather
+      // killer if scoring itself already found one, otherwise the first move
+      // that kills in ANY displayed scenario, otherwise the move responsible
+      // for the true worst (non-lethal) number across every scenario shown.
+      let primaryMove = theirBestMove;
+      if (theyOhkoAny) {
+        if (theyOhkoScoring) {
+          primaryMove = killingMoveScoring.move;
+        } else {
+          for (const [mv, scns] of scenariosByMove.entries()) {
+            if (scns.some((s) => s.ohko)) { primaryMove = mv; break; }
+          }
+        }
+      }
+      const primaryScenarios = scenariosByMove.get(primaryMove) || [];
 
       // Do we guarantee a KO back? Reuse the counters pass rather than
       // recalculating — it already walked every move in every plausible weather.
@@ -1615,30 +1676,36 @@ async function buildExchangeGrid(team, threats, counters, archetype, weatherAnal
         }
       }
 
-      // Speed's weight escalates with what it decides.
+      // Speed's weight escalates with what it decides. Kept on the SCORING
+      // flag, unchanged — see the comment on theyOhkoScoring above.
       let speedWeight = CELL_WEIGHTS.speed;
       if (weMoveFirst && weOhko) speedWeight *= SPEED_MATTERS_MULT;
-      if (weMoveFirst && weOhko && theyOhko) speedWeight *= (SPEED_DECIDES_MULT / SPEED_MATTERS_MULT);
+      if (weMoveFirst && weOhko && theyOhkoScoring) speedWeight *= (SPEED_DECIDES_MULT / SPEED_MATTERS_MULT);
 
       const raw = CELL_WEIGHTS.we_ohko * (weOhko ? 1 : 0)
-        + CELL_WEIGHTS.we_survive * (theyOhko ? 0 : 1)
+        + CELL_WEIGHTS.we_survive * (theyOhkoScoring ? 0 : 1)
         + speedWeight * (weMoveFirst ? 1 : 0);
       // Normalise against what this cell could have scored, so escalating the
       // speed term does not silently inflate every cell that happens to be fast.
       const cellMax = CELL_WEIGHTS.we_ohko + CELL_WEIGHTS.we_survive + speedWeight;
       const score = cellMax > 0 ? raw / cellMax : 0;
 
-      if (theyOhko) {
+      // Weakest-link and the row's "KOs ours" summary are reader-facing, so
+      // they use theyOhkoAny — the broadened, every-displayed-scenario flag —
+      // same reasoning as the verdict line itself. The SCORE above never sees
+      // this flag.
+      if (theyOhkoAny) {
         const prior = perMemberDeaths.get(member.pokemon) || { usageSum: 0, count: 0 };
         perMemberDeaths.set(member.pokemon, { usageSum: prior.usageSum + (threat.usage || 0), count: prior.count + 1 });
       }
 
       cells.push({
         our: member.pokemon,
-        they_ohko_us: theyOhko,
-        their_killing_move: killingMove,
-        their_best_damage: theirBest,
-        their_damage_weather_alternates: weatherAlternates,
+        they_ohko_us: theyOhkoAny,
+        they_ohko_us_scoring: theyOhkoScoring,
+        their_primary_move: primaryMove,
+        their_primary_scenarios: primaryScenarios,
+        their_best_damage: theirBestOverall,
         we_ohko_them: weOhko,
         our_killing_move: ourKill ? { move: ourKill.move, range: ourKill.damage_range } : null,
         we_move_first: weMoveFirst,
