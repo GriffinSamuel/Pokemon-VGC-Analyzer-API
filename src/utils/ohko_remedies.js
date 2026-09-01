@@ -276,7 +276,20 @@ function twoVarSpSearch(member, exchange, nature, item, otherSpend) {
     }
     if (found !== null) {
       const cost = hpSp + found;
-      if (!best || cost < best.cost) best = { hpSp, defSp: found, cost, nature, item };
+      if (!best || cost < best.cost) {
+        // Recompute once at the exact winning (hpSp, found) point — the
+        // binary search's own last dmg may be from a different mid it
+        // rejected on the way to `found`, and the brief's own worked example
+        // shows the new damage figure on every FIX line, not just the
+        // pass/fail verdict.
+        const winningSp = { ...member.sp, hp: hpSp, [defKey]: found };
+        const winningSide = { nature, item, sp: winningSp, ivs: { hp: 31 } };
+        let winningDmg;
+        try {
+          winningDmg = damagePercentRange(exchange.candidate.row, worstBuild.attackerSide, member.pokemonRow, winningSide, move, activeWeatherFor(exchange));
+        } catch (_err) { continue; }
+        best = { hpSp, defSp: found, cost, nature, item, dmg: winningDmg };
+      }
     }
   }
   return best;
@@ -377,7 +390,7 @@ async function searchRemedy(member, exchange, team) {
         dmgAlone = damagePercentRange(exchange.candidate.row, exchange.worstBuild.attackerSide, member.pokemonRow, sideAlone, exchange.move, activeWeatherFor(exchange));
       } catch (_err) { dmgAlone = null; }
       if (dmgAlone && dmgAlone.max < 100) {
-        const result = { tier: 'item', hpSp: member.sp.hp || 0, defSp: member.sp[defKey] || 0, cost: 0, nature: member.nature, item, defKey };
+        const result = { tier: 'item', hpSp: member.sp.hp || 0, defSp: member.sp[defKey] || 0, cost: 0, nature: member.nature, item, defKey, dmg: dmgAlone };
         if (conflictOwner) { conflictedFix = conflictedFix || { item, teammate: conflictOwner, dmg: dmgAlone }; }
         else return result;
       }
@@ -585,7 +598,8 @@ function renderFixLine(fix, exchange, member) {
   const desc = spreadDesc(fix.hpSp, fix.defSp, fix.defKey, fix.nature);
   const wasDesc = `${member.sp.hp || 0} HP / ${member.sp[fix.defKey] || 0} ${fix.defKey === 'def' ? 'Def' : 'SpD'}`;
   const itemChange = fix.item && lower(fix.item) !== lower(member.item) ? `, ${member.item} -> ${fix.item}` : '';
-  return [`    ${tierLabel(fix.tier)}: ${desc} (was ${wasDesc})${itemChange}`];
+  const newDmgNote = fix.dmg ? ` — new damage ${fix.dmg.min}-${fix.dmg.max}% — no longer an OHKO` : '';
+  return [`    ${tierLabel(fix.tier)}: ${desc} (was ${wasDesc})${itemChange}${newDmgNote}`];
 }
 
 function renderConsequences(consequences) {
