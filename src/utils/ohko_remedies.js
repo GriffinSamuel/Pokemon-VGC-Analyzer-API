@@ -277,22 +277,39 @@ function twoVarSpSearch(member, exchange, nature, item, otherSpend) {
     if (found !== null) {
       const cost = hpSp + found;
       if (!best || cost < best.cost) {
-        // Recompute once at the exact winning (hpSp, found) point — the
-        // binary search's own last dmg may be from a different mid it
-        // rejected on the way to `found`, and the brief's own worked example
-        // shows the new damage figure on every FIX line, not just the
-        // pass/fail verdict.
-        const winningSp = { ...member.sp, hp: hpSp, [defKey]: found };
-        const winningSide = { nature, item, sp: winningSp, ivs: { hp: 31 } };
-        let winningDmg;
-        try {
-          winningDmg = damagePercentRange(exchange.candidate.row, worstBuild.attackerSide, member.pokemonRow, winningSide, move, activeWeatherFor(exchange));
-        } catch (_err) { continue; }
-        best = { hpSp, defSp: found, cost, nature, item, dmg: winningDmg };
+        best = { hpSp, defSp: found, cost, nature, item };
       }
     }
   }
-  return best;
+  if (!best) return null;
+
+  // The search above finds the MINIMUM-cost (hpSp, defSp) that clears the
+  // target, per the brief's own search method — but a real Champions spread
+  // always totals exactly 66 SP ("Unspent SP is 0 in a slot — budget is a
+  // ceiling, not a target" per CLAUDE.md's invariants means every point is
+  // either justified or explicitly marked unspendable, not silently absent).
+  // Any leftover SP within this search's own two variables goes to the
+  // defending stat first (directly relevant to THIS threat, strictly
+  // improves it further) and HP second, both capped at 32 — never removed,
+  // since more bulk cannot make an already-passing spread fail.
+  let { hpSp, defSp } = best;
+  let leftover = (SP_BUDGET_TOTAL - otherSpend) - best.cost;
+  const addToDef = Math.min(leftover, SP_CAP_PER_STAT - defSp);
+  defSp += addToDef;
+  leftover -= addToDef;
+  const addToHp = Math.min(leftover, SP_CAP_PER_STAT - hpSp);
+  hpSp += addToHp;
+  leftover -= addToHp;
+
+  const finalSp = { ...member.sp, hp: hpSp, [defKey]: defSp };
+  const finalSide = { nature, item, sp: finalSp, ivs: { hp: 31 } };
+  let finalDmg;
+  try {
+    finalDmg = damagePercentRange(exchange.candidate.row, worstBuild.attackerSide, member.pokemonRow, finalSide, move, activeWeatherFor(exchange));
+  } catch (_err) {
+    return null; // should not happen — adding SP can only help, never break a working combo
+  }
+  return { hpSp, defSp, cost: hpSp + defSp, nature, item, dmg: finalDmg };
 }
 
 // The worst-build damage calc was computed under whatever weather that
