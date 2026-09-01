@@ -820,6 +820,14 @@ function weatherTagFor(t) {
 function accuracyNoteSuffix(t) {
   return t.accuracy_note ? `, ${t.accuracy_note}` : '';
 }
+// Charge-turn note (Electro Shot, Solar Beam/Blade) — a USABILITY fact, kept
+// separate from weatherAltTrailer()'s damage-NUMBER alternatives. A move can
+// need this without ever having an alt_weathers entry (Electro Shot: its
+// power never differs by weather, so it must never get a second damage
+// figure) — see weather_rules.js's chargeTurnNoteFor().
+function chargeNoteSuffix(t) {
+  return t.charge_note ? ` — ${t.charge_note}` : '';
+}
 // Offensive lines put the move name directly before the damage parenthetical
 // ("... with Solar Beam (100.5-119%...)"), and a test (api.test.js) parses
 // that move name by matching up to the first "(" — so the weather tag here
@@ -869,6 +877,7 @@ function describeThresholdForWhy(t, allDefensiveThresholds, statKey) {
     // KO tier is never allowed to read as unconditional — the trailer is
     // appended directly onto the primary line, never buried elsewhere.
     primaryText += weatherAltTrailer(t);
+    primaryText += chargeNoteSuffix(t);
 
     // FIX 4: secondary interactions — top 4 closest-to-OHKO, ordered by max damage descending
     if (allDefensiveThresholds && statKey) {
@@ -895,7 +904,7 @@ function describeThresholdForWhy(t, allDefensiveThresholds, statKey) {
           const secFreq = buildFrequencyNote(th);
           const secWeatherTag = weatherTagFor(th);
           const secAccNote = accuracyNoteSuffix(th);
-          return `${th.attackerName} ${th.moveName}${secWeatherTag} (${range}${buildLabel}${secRecoil}${secAccNote}${secFreq})${weatherAltTrailer(th)}`;
+          return `${th.attackerName} ${th.moveName}${secWeatherTag} (${range}${buildLabel}${secRecoil}${secAccNote}${secFreq})${weatherAltTrailer(th)}${chargeNoteSuffix(th)}`;
         });
         return `${primaryText}\n     [also: ${secondaryParts.join(' | ')}]`;
       }
@@ -941,6 +950,7 @@ function describeThresholdForWhy(t, allDefensiveThresholds, statKey) {
           .map(a => `also in ${weatherLabel(a.weather, a.source)}: ${a.this_spread_ko}s (${a.weighted_damage_min}-${a.weighted_damage_max}% vs ${defDescription})`);
         if (altParts.length > 0) result += `; ${altParts.join('; ')}`;
       }
+      result += chargeNoteSuffix(t);
       return result;
     }
     const vsTarget = t.threat.split(' vs. ')[1];

@@ -9,7 +9,7 @@ const { classifyRole } = require('./role_classifier');
 const { CalcDamage, getMoveData } = require('./nerd_of_now_calc');
 const { effectivenessAgainst } = require('./typeChart');
 const { round } = require('./format');
-const { weatherChangesDamage, resolveTypeFor, accuracyNoteFor } = require('./weather_rules');
+const { weatherChangesDamage, resolveTypeFor, accuracyNoteFor, chargeTurnNoteFor } = require('./weather_rules');
 
 // Items @smogon/calc already models natively (Choice Scarf's 1.5x Speed, Choice
 // Band/Specs'/Life Orb's damage multipliers + Life Orb recoil, Assault Vest's
@@ -76,7 +76,15 @@ const DEATH_TRAP_PENALTY_MULTIPLIER = 2.0;
 // this, Utility Umbrella was the ONLY defensive item it understood, so every
 // cached spread was optimised against opponents calculated as itemless. Those
 // numbers are wrong and must not survive.
-const SCORER_VERSION = 13;
+// Bumped 13->14: weatherChangesDamage() no longer treats Electro Shot as
+// damage-changing (only its charge turn changes with Rain, not its power —
+// see weather_rules.js). A cached pre-fix threshold still carries the old,
+// wrong alt_weathers entry that duplicated the SAME number under a second
+// weather label; also, thresholds now carry a new charge_note field that a
+// cached entry from before this fix would simply be missing. Score itself is
+// unchanged (charge_note/alt_weathers are display-only), but stale entries
+// must not survive since they'd keep printing the duplicate.
+const SCORER_VERSION = 14;
 
 // Weather Ball is the only move whose attacking type is not knowable from the
 // moves table — it is stored as Normal and resolved at damage time. The
@@ -905,6 +913,7 @@ async function scoreSpread(pokemon, sp, nature, role, threatMatrix, metaContext,
           primary_weather: thresholdPrimaryWeather,
           alt_weathers: thresholdAltWeathers,
           accuracy_note: accuracyNoteFor(threat.move, primaryWeather),
+          charge_note: chargeTurnNoteFor(threat.move, { attackerItem }),
           contribution,
         });
       }
@@ -1010,6 +1019,7 @@ async function scoreSpread(pokemon, sp, nature, role, threatMatrix, metaContext,
           const bestMoveWeatherSensitive = weatherChangesDamage(bestMove, primaryResolvedType, bestMoveCategory, targetTypes, primaryWeather, { attackerItem: item });
           metEntry.primary_weather = bestMoveWeatherSensitive ? primaryWeather : null;
           metEntry.accuracy_note = accuracyNoteFor(bestMove, primaryWeather);
+          metEntry.charge_note = chargeTurnNoteFor(bestMove, { attackerItem: item });
           if (bestMoveWeatherSensitive && primaryWeather && teamWeathers.length > 1) {
             const altWeathers = teamWeathers.filter(w => w !== primaryWeather);
             if (altWeathers.length > 0) {
