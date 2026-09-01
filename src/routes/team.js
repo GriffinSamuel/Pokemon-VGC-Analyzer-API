@@ -23,6 +23,9 @@ const {
   analyzeTrickRoom, analyzeSpeedTiers, analyzeWeaknesses, analyzeArchetypeMatchups,
   analyzeMatchups, getLegalPokemonSet, suggestCoverageReplacements,
 } = require('../utils/team_analyzer');
+const { computeOhkoRemedies, renderOhkoRemedies } = require('../utils/ohko_remedies');
+const { getThreatMatrix } = require('../utils/threat_matrix');
+const { getMetaContext } = require('../utils/speed_context');
 const { checkSpeciesLegality } = require('../config/format_legality');
 const fs = require('fs');
 const path = require('path');
@@ -1111,7 +1114,7 @@ function buildWeatherSummary(ta, team) {
   return lines;
 }
 
-function buildTeamBuildText(responseBody, team) {
+function buildTeamBuildText(responseBody, team, ohkoRemedies) {
   const lines = [];
 
   lines.push(...buildWeatherSummary(responseBody.team_analysis, team));
@@ -1342,6 +1345,15 @@ function buildTeamBuildText(responseBody, team) {
     if (r.weather_note) lines.push(`    ${r.weather_note}`);
   }
   lines.push('');
+
+  // OHKO remedies — for every guaranteed losing exchange above (they OHKO and
+  // outspeed us, or they OHKO and we can't OHKO back), what changing THIS
+  // member's spread/nature/item would actually do about it, or an honest
+  // statement that nothing legal does. See logs/BRIEF_ohko_remedies.md.
+  if (ohkoRemedies) {
+    lines.push(sectionDivider('OHKO REMEDIES'));
+    lines.push(...renderOhkoRemedies(ohkoRemedies));
+  }
 
   // FIX 11: Coverage move suggestions
   const covSuggestions = responseBody.team_analysis?.coverage_suggestions || [];
@@ -1785,7 +1797,14 @@ router.post('/build', async (req, res, next) => {
     };
 
     if (req.accepts(['json', 'text']) === 'text') {
-      return res.type('text/plain').send(buildTeamBuildText(responseBody, team));
+      // Gated to the text-report path only — this is a real damage-calc
+      // search across the full top-50 meta pool per member and is not cheap
+      // (see logs/BRIEF_ohko_remedies.md section 9's compute-budget note).
+      // JSON API callers (including this route's own JSON test coverage)
+      // never see it and pay nothing for it.
+      const [remediesThreatMatrix, remediesMetaContext] = await Promise.all([getThreatMatrix(), getMetaContext()]);
+      const ohkoRemedies = await computeOhkoRemedies(team, weather, legalPokemonSet, remediesThreatMatrix, remediesMetaContext, teamWeathersForContext);
+      return res.type('text/plain').send(buildTeamBuildText(responseBody, team, ohkoRemedies));
     }
     res.json(responseBody);
   } catch (err) {

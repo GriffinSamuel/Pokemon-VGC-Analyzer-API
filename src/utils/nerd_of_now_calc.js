@@ -1616,4 +1616,8 @@ module.exports = {
   // only through a damage number, which hides which half of the pair is wrong.
   resolveMultiHit,
   MULTI_HIT_MOVES,
+  // Exported so a caller proposing an item change (not just calculating the
+  // effect of one already assigned) can check which resist berry answers a
+  // given attacking type, without duplicating this map.
+  RESIST_BERRIES,
 };
