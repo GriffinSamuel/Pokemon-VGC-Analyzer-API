@@ -1261,13 +1261,17 @@ function damagePercentRange(attackerRow, attackerSide, defenderRow, defenderSide
     raw_min_percent: result.raw_min_percent,
     raw_max_percent: result.raw_max_percent,
     multi_hit: result.multi_hit || null,
-    // Raw (post-Sash-cap, same convention as min/max above) damage integers —
-    // needed by ohko_remedies.js to compute EXACT roll odds via
-    // nerd_of_now_calc.js's applyRandomFactor(max_damage), which reproduces the
-    // real 16-value 85-100% roll table rather than a statistical approximation
-    // (max_damage IS the roll=100 value by construction: floor(x*100/100)===x).
+    // Raw (post-Sash-cap, same convention as min/max above) damage integers.
     min_damage: result.minDamage,
     max_damage: result.maxDamage,
+    // The real 16 per-roll damage values (null for multi-hit moves — see
+    // nerd_of_now_calc.js's own comment on this field). ohko_remedies.js uses
+    // this for EXACT roll odds ("N/16 rolls OHKO") — NOT re-derived by
+    // reapplying a random factor on top of max_damage, which is already
+    // STAB/type-modified and would produce a different, wrong distribution
+    // (verified by hand against a real report line during this feature's
+    // spot-check pass; see logs/PROGRESS_ohko_remedies.md).
+    all_damages: result.all_damages || null,
   };
 }
 

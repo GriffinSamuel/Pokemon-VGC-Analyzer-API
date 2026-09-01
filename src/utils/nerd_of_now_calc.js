@@ -1285,6 +1285,14 @@ function calcSingleMove(attacker, defender, move, field) {
     // but a caller must not present them as this move's damage.
     bp_unresolved: bpUnresolved,
     base_power_used: finalBP,
+    // The real 16 per-roll damage values, each ALREADY through applyFinalMods
+    // (STAB/type/etc — see STEP 5/6 above: the random roll is applied BEFORE
+    // those, not after). A caller wanting exact roll odds (e.g. "N/16 rolls
+    // OHKO") must use THIS array, not re-derive one from minDamage/maxDamage —
+    // applyFinalMods is not a pure linear scale of the pre-roll base damage
+    // (pokeRound/chainMods truncate), so reapplying a random factor on top of
+    // an already-modified maxDamage produces a different, wrong distribution.
+    all_damages: finalDamages.slice(),
   };
 }
 
@@ -1537,6 +1545,12 @@ function CalcDamage(opts) {
     raw_max_percent: rawMaxPercent,
     raw_min_damage: baseMinDamage,
     raw_max_damage: baseMaxDamage,
+    // The real 16 per-roll damage values (see the inner single-hit function's
+    // own comment on `all_damages` above) — null for multi-hit moves, whose
+    // top-level min/max here are already an EXPECTED VALUE across a hit-count
+    // distribution, not a single hit's 16-roll range, so "N/16 rolls OHKO"
+    // does not apply to them the same way.
+    all_damages: multiHitOut ? null : result.all_damages,
     // Raw intermediate values for debugging
     _attackerStats: attackerStats,
     _defenderStats: defenderStats,

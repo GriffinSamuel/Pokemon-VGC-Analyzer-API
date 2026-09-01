@@ -19,7 +19,7 @@
 const { calcStat, natureMultiplierFor, SP_BUDGET_TOTAL, SP_CAP_PER_STAT } = require('./stat_formula');
 const { validateSpread } = require('./spread_optimizer');
 const { weatherChangesDamage, resolveTypeFor } = require('./weather_rules');
-const { applyRandomFactor, RESIST_BERRIES, MULTI_HIT_MOVES } = require('./nerd_of_now_calc');
+const { RESIST_BERRIES, MULTI_HIT_MOVES } = require('./nerd_of_now_calc');
 const { getSpeciesRow, getCommonItems, getTopDamageAffectingItem, getCommonSpeedTiers } = require('./ev_observations');
 const { getRealAbilityFrequency } = require('./item_optimizer');
 const { getTopAttackerSpreads, buildAttackerBuildLabel, scoreSpread } = require('./spread_scorer');
@@ -50,22 +50,27 @@ const lower = (s) => String(s || '').toLowerCase();
 const isMegaMember = (member) => (member.pokemon || '').includes('-Mega');
 const isMultiHitMove = (moveName) => !!MULTI_HIT_MOVES[lower(moveName)];
 
-// Real max HP for a hypothetical hp-SP value — used both to turn a raw damage
-// integer into a percentage and to feed applyRandomFactor's roll table.
+// Real max HP for a hypothetical hp-SP value — used to turn a raw damage
+// integer into a percentage.
 function maxHpFor(pokemonRow, hpSp) {
   return calcStat(pokemonRow.hp, hpSp, 1.0, true);
 }
 
-// Exact (not statistically approximated) roll odds. `maxDamage` is the
-// post-Sash-cap raw damage integer damagePercentRange returns for the roll=100
-// case — floor(baseDamage*100/100) === baseDamage, so feeding it back into
-// applyRandomFactor reproduces the identical 16-value table the engine itself
-// used internally, rather than re-deriving the distribution some other way.
-function rollOdds(maxDamage, maxHp) {
-  if (!maxDamage || !maxHp) return null;
-  const rolls = applyRandomFactor(maxDamage);
-  const ohkoRolls = rolls.filter((d) => (d / maxHp) * 100 >= 100).length;
-  return { ohko_rolls: ohkoRolls, total_rolls: rolls.length, survive_rolls: rolls.length - ohkoRolls };
+// Exact (not statistically approximated) roll odds, from the REAL 16 per-roll
+// damage values (`damagePercentRange`'s `all_damages` — see its own comment).
+// An earlier version of this function re-derived a 16-value table by calling
+// applyRandomFactor(max_damage) — but max_damage is already STAB/type-modified
+// (the engine applies the random roll BEFORE those, not after; see
+// nerd_of_now_calc.js STEP 5/6), so reapplying a random factor on top of it
+// produced a different, wrong distribution. Caught by hand-verifying a real
+// report line against the Champions damage formula during this feature's
+// mandatory spot-check pass (off by 1 of 16 rolls at the exact boundary) —
+// see logs/PROGRESS_ohko_remedies.md. `all_damages` is null for multi-hit
+// moves (their top-line min/max are an expected value, not a 16-roll range).
+function rollOdds(allDamages, maxHp) {
+  if (!allDamages || !maxHp) return null;
+  const ohkoRolls = allDamages.filter((d) => (d / maxHp) * 100 >= 100).length;
+  return { ohko_rolls: ohkoRolls, total_rolls: allDamages.length, survive_rolls: allDamages.length - ohkoRolls };
 }
 
 // --- TASK 1: gather every candidate attacker's real data once -------------
@@ -204,6 +209,7 @@ async function computeQualifyingExchanges(team, weatherAnalysis, legalPokemonSet
           min: worstBuild.dmg.min,
           max: worstBuild.dmg.max,
           max_damage: worstBuild.dmg.max_damage,
+          all_damages: worstBuild.dmg.all_damages,
           weather_note: weatherNote,
           member_speed: memberSpeed,
           candidate,
@@ -223,7 +229,7 @@ async function computeQualifyingExchanges(team, weatherAnalysis, legalPokemonSet
           byMember.get(member.pokemon).guaranteed.push(exchange);
         } else {
           const maxHp = maxHpFor(member.pokemonRow, member.sp.hp || 0);
-          exchange.odds = rollOdds(worstBuild.dmg.max_damage, maxHp);
+          exchange.odds = rollOdds(worstBuild.dmg.all_damages, maxHp);
           byMember.get(member.pokemon).possible.push(exchange);
         }
       }
@@ -443,15 +449,27 @@ async function computeConsequences(member, fix, threatMatrix, metaContext, teamW
   const gained = [];
   for (const [key, before] of baselineByKey) {
     const now = afterByKey.get(key);
-    if (!now) { lost.push(before); continue; }
+    // `before.this_spread_ko` is the CURRENT (real, already-invested) spread's
+    // tier — the correct "before" value for a before/after diff.
+    // `before.baseline_ko` is a DIFFERENT thing entirely (the tier at 0 SP
+    // invested at all) and must never be shown here — an earlier version of
+    // this function pushed the raw `before` entry for every regression and
+    // rendered baseline_ko -> this_spread_ko, which described the SP=0
+    // baseline vs. the CURRENT spread, not the current spread vs. the
+    // PROPOSED one. Caught live: a real report line read "Sneasler Close
+    // Combat: 2HKO -> 3HKO" under COSTS for a PARTIAL fix that only ADDED
+    // defense — a cost line describing an improvement. Fixed by attaching the
+    // real after-value (`_after_ko`) onto the pushed entry and having the
+    // renderer use `this_spread_ko -> _after_ko` instead.
+    if (!now) { lost.push({ ...before, _after_ko: null }); continue; }
     // koRank: higher = "dies more easily" (OHKO highest, no_ko lowest). A
     // DEFENSIVE regression is the tier moving UP (survives less); an
     // OFFENSIVE regression is the tier moving DOWN (kills less).
     if (before.category === 'defensive' && before.this_spread_ko !== now.this_spread_ko && koRank(now.this_spread_ko) > koRank(before.this_spread_ko)) {
-      lost.push(before); // a survival got worse (or a KO tier regressed toward OHKO)
+      lost.push({ ...before, _after_ko: now.this_spread_ko }); // a survival got worse (or a KO tier regressed toward OHKO)
     }
     if (before.category === 'offensive' && before.this_spread_ko !== now.this_spread_ko && koRank(now.this_spread_ko) < koRank(before.this_spread_ko)) {
-      lost.push(before); // an offensive KO got worse (OHKO -> 2HKO etc.)
+      lost.push({ ...before, _after_ko: now.this_spread_ko }); // an offensive KO got worse (OHKO -> 2HKO etc.)
     }
   }
   for (const [key, now] of afterByKey) {
@@ -555,7 +573,7 @@ function renderFixLine(fix, exchange, member) {
     const desc = spreadDesc(p.hpSp, p.defSp, fix.defKey, p.nature);
     const itemNote = p.item && lower(p.item) !== lower(member.item) ? `, ${member.item} -> ${p.item}` : '';
     const maxHp = maxHpFor(member.pokemonRow, p.hpSp);
-    const odds = rollOdds(p.dmg.max_damage, maxHp);
+    const odds = rollOdds(p.dmg.all_damages, maxHp);
     const oddsNote = odds ? ` — survives some rolls (${odds.survive_rolls}/${odds.total_rolls})` : '';
     const lines = [`    PARTIAL: ${desc}${itemNote} — new damage ${p.dmg.min}-${p.dmg.max}%${oddsNote}. Never call this "fixed": it still dies on some rolls.`];
     if (fix.itemNotes && fix.itemNotes.length > 0) {
@@ -581,7 +599,15 @@ function renderConsequences(consequences) {
   if (consequences.lost.length > 0) {
     const parts = consequences.lost.map((t) => {
       if (t.category === 'speed' || t.category === 'speed_tie') return `no longer ${t.threat}`;
-      return `${t.threat}: ${t.baseline_ko || '?'} -> ${t.this_spread_ko || 'lost'}`;
+      // this_spread_ko is the CURRENT spread's real tier; _after_ko is what
+      // the proposed spread gets. A DISAPPEARED entry (_after_ko === null)
+      // is NOT necessarily a death — scoreSpread's thresholds_met lists one
+      // BINDING threshold per stat (see spread_scorer.js), so a threshold
+      // can vanish from the list because a different threat became the
+      // cited reason for that same stat's investment, not because the old
+      // one stopped being survived. Worded to avoid the false claim.
+      if (t._after_ko === null) return `${t.threat}: no longer the cited reason for its SP (was ${t.this_spread_ko || '?'} — may still be survived via a different attribution)`;
+      return `${t.threat}: ${t.this_spread_ko || '?'} -> ${t._after_ko}`;
     });
     lines.push(`    COSTS: ${parts.join(' | ')}`);
   }
