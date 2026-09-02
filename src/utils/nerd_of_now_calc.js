@@ -1424,20 +1424,46 @@ function CalcDamage(opts) {
   // each hit independently, so the k-hit floor is k minimum rolls SUMMED — not
   // one minimum roll multiplied by k, which drifts by up to k-1 points and is
   // enough to move a KO threshold in a system built on exact boundaries.
+  //
+  // A type-resist berry is single-use: it fires on the FIRST hit that matches
+  // its type and is gone for every hit after. `result` (hit 1, above) was
+  // calculated with the berry intact, so it already reflects that discount —
+  // but reusing it for hits 2+ (the flat-BP branch) or recalculating hits 2+
+  // against an unmodified `defenderFull` (the escalating-BP branch) applied
+  // the same one-time discount to every hit, halving the move's TOTAL damage
+  // instead of just its first hit's.
+  const berryType = RESIST_BERRIES[defenderFull.item];
+  const berryConsumedOnHit1 = !!berryType
+    && (defenderFull.item === 'Chilan Berry' || moveObj.type === berryType);
+  const defenderAfterBerry = berryConsumedOnHit1
+    ? Object.assign({}, defenderFull, { item: '' })
+    : defenderFull;
+
   let multiHitOut = null;
   let expectedMinDamage = null;
   let expectedMaxDamage = null;
   if (multiHit) {
     const cumMin = [0];
     const cumMax = [0];
+    let flatHitAfterBerry = null;
     for (let i = 1; i <= multiHit.maxHits; i++) {
       // Only escalating-BP moves need a fresh calculation per hit. For every
       // other multi-hit move each hit is identical, and re-running the whole
       // pipeline ten times for Population Bomb inside a team-wide loop would be
-      // pure waste.
-      const hit = (i === 1 || !multiHit.bpPerHit)
-        ? result
-        : calcSingleMove(Object.assign({}, attackerFull, { multiHitIndex: i }), defenderFull, moveObj, field);
+      // pure waste — except once, if a resist berry is consumed on hit 1, to
+      // get hits 2+ without the discount.
+      let hit;
+      if (i === 1) {
+        hit = result;
+      } else if (multiHit.bpPerHit) {
+        hit = calcSingleMove(Object.assign({}, attackerFull, { multiHitIndex: i }), defenderAfterBerry, moveObj, field);
+      } else if (berryConsumedOnHit1) {
+        flatHitAfterBerry = flatHitAfterBerry
+          || calcSingleMove(attackerFull, defenderAfterBerry, moveObj, field);
+        hit = flatHitAfterBerry;
+      } else {
+        hit = result;
+      }
       cumMin[i] = cumMin[i - 1] + Math.round(hit.minDamage);
       cumMax[i] = cumMax[i - 1] + Math.round(hit.maxDamage);
     }
