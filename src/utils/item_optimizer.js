@@ -3,6 +3,52 @@ const { Dex } = require('@pkmn/dex');
 const { getCommonItems } = require('./ev_observations');
 const { calcStat, SP_CAP_PER_STAT } = require('./stat_formula');
 const { BULKY_TOTAL_THRESHOLD } = require('./role_classifier');
+const { RESIST_BERRIES } = require('./nerd_of_now_calc');
+
+// Single shared table of "what does this item do" prose, in plain product
+// language — used both to explain an assigned item (team.js's
+// generateItemReason) and to name what an OUTGOING item is giving up when a
+// remedy proposal swaps it away (ohko_remedies.js). Previously lived only in
+// team.js as a route-local const; moved here so a second copy doesn't grow in
+// ohko_remedies.js (the exact "two implementations of the same table" shape
+// this codebase keeps re-breaking on — see weather_rules.js's own history).
+const ITEM_REASON_TEMPLATES = {
+  'life orb': 'Boosts damage output by 30% at the cost of 10% recoil per attack — maximizes KO potential against this team\'s real threat list',
+  'choice scarf': 'Multiplies Speed by 1.5x, letting this Pokemon outspeed threats it otherwise couldn\'t reach',
+  'choice band': 'Boosts physical damage by 50%, locked into one move per switch-in',
+  'choice specs': 'Boosts special damage by 50%, locked into one move per switch-in',
+  leftovers: 'Heals 1/16 max HP every turn — sustains through prolonged fights',
+  'sitrus berry': 'Heals 25% max HP once below half — a one-time cushion against burst damage',
+  'assault vest': 'Boosts Special Defense by 50%, trading status moves for raw special bulk',
+  'rocky helmet': 'Punishes contact moves with 1/6 max HP recoil to the attacker',
+  'focus sash': 'Guarantees survival of one hit from full HP — insurance for a frail sweeper',
+  'wide lens': 'Boosts move accuracy by 1.1x (capped at 100%)',
+};
+
+// A resist berry (Occa, Chople, Roseli, etc.) isn't in the fixed table above
+// because there are 17 of them, one per type, all with the identical mechanic
+// modulo which type they answer — RESIST_BERRIES (nerd_of_now_calc.js) already
+// holds that type mapping; this generates the one sentence of prose from it
+// instead of hand-writing 17 near-duplicate template entries.
+function describeResistBerry(itemName) {
+  const realName = Object.keys(RESIST_BERRIES).find((k) => k.toLowerCase() === (itemName || '').toLowerCase());
+  if (!realName) return null;
+  const berryType = RESIST_BERRIES[realName];
+  if (realName === 'Chilan Berry') {
+    return 'Halves incoming Normal-type damage on the first hit that matches, regardless of effectiveness (single-use)';
+  }
+  return `Halves incoming super-effective ${berryType}-type damage on the first hit that matches (single-use)`;
+}
+
+// Plain-language description of what holding `itemName` does — the single
+// entry point both team.js and ohko_remedies.js call. Returns null for an
+// item this codebase has no modeled mechanical description for (a real item
+// with no damage/bulk effect this project tracks, e.g. a pure-flavor item).
+function describeItemEffect(itemName) {
+  const lower = (itemName || '').toLowerCase();
+  if (ITEM_REASON_TEMPLATES[lower]) return ITEM_REASON_TEMPLATES[lower];
+  return describeResistBerry(itemName);
+}
 
 // Roles that invest heavily in an offensive stat vs. roles built around bulk —
 // same 4-role vocabulary role_classifier.js already produces, just grouped for
@@ -527,4 +573,6 @@ module.exports = {
   isDamageBoostingItem,
   getGlobalItemFrequency,
   DAMAGE_BOOSTING_ITEMS,
+  ITEM_REASON_TEMPLATES,
+  describeItemEffect,
 };

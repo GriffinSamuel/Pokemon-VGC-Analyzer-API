@@ -11,6 +11,7 @@ const {
   getRealAbilityFrequency, detectTeamWeatherContext, resolveRealAbility,
   isConditionalSpeedAbility, conditionalSpeedAbilityWeather,
   WEATHER_SETTER_ABILITIES, isDamageBoostingItem, getGlobalItemFrequency,
+  ITEM_REASON_TEMPLATES,
 } = require('../utils/item_optimizer');
 const { getOrComputeEvolutionarySpread } = require('../utils/ev_optimizer');
 const { evaluateItemValue } = require('../utils/item_value_eval');
@@ -24,8 +25,6 @@ const {
   analyzeMatchups, getLegalPokemonSet, suggestCoverageReplacements,
 } = require('../utils/team_analyzer');
 const { computeOhkoRemedies, renderOhkoRemedies } = require('../utils/ohko_remedies');
-const { getThreatMatrix } = require('../utils/threat_matrix');
-const { getMetaContext } = require('../utils/speed_context');
 const { checkSpeciesLegality } = require('../config/format_legality');
 const fs = require('fs');
 const path = require('path');
@@ -438,18 +437,6 @@ function checkSeedConvergence(finalSp, seedSp) {
     diverged_stats: divergedStats,
   };
 }
-
-const ITEM_REASON_TEMPLATES = {
-  'life orb': 'Boosts damage output by 30% at the cost of 10% recoil per attack — maximizes KO potential against this team\'s real threat list',
-  'choice scarf': 'Multiplies Speed by 1.5x, letting this Pokemon outspeed threats it otherwise couldn\'t reach',
-  'choice band': 'Boosts physical damage by 50%, locked into one move per switch-in',
-  'choice specs': 'Boosts special damage by 50%, locked into one move per switch-in',
-  leftovers: 'Heals 1/16 max HP every turn — sustains through prolonged fights',
-  'sitrus berry': 'Heals 25% max HP once below half — a one-time cushion against burst damage',
-  'assault vest': 'Boosts Special Defense by 50%, trading status moves for raw special bulk',
-  'rocky helmet': 'Punishes contact moves with 1/6 max HP recoil to the attacker',
-  'focus sash': 'Guarantees survival of one hit from full HP — insurance for a frail sweeper',
-};
 
 function generateItemReason(assignment, ability, teamWeatherContext) {
   var base = ITEM_REASON_TEMPLATES[assignment.item.toLowerCase()]
@@ -1801,8 +1788,7 @@ router.post('/build', async (req, res, next) => {
       // (see logs/BRIEF_ohko_remedies.md section 9's compute-budget note).
       // JSON API callers (including this route's own JSON test coverage)
       // never see it and pay nothing for it.
-      const [remediesThreatMatrix, remediesMetaContext] = await Promise.all([getThreatMatrix(), getMetaContext()]);
-      const ohkoRemedies = await computeOhkoRemedies(team, weather, legalPokemonSet, remediesThreatMatrix, remediesMetaContext, teamWeathersForContext);
+      const ohkoRemedies = await computeOhkoRemedies(team, weather, legalPokemonSet);
       return res.type('text/plain').send(buildTeamBuildText(responseBody, team, ohkoRemedies));
     }
     res.json(responseBody);
