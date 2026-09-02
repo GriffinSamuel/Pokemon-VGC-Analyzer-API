@@ -20,8 +20,8 @@ const { calcStat, natureMultiplierFor, SP_BUDGET_TOTAL, SP_CAP_PER_STAT } = requ
 const { validateSpread } = require('./spread_optimizer');
 const { weatherChangesDamage, resolveTypeFor } = require('./weather_rules');
 const { getSpeciesRow, getTopDamageAffectingItem, getCommonSpeedTiers } = require('./ev_observations');
-const { getRealAbilityFrequency, getGlobalItemFrequency } = require('./item_optimizer');
-const { getTopAttackerSpreads, buildAttackerBuildLabel, scoreSpread } = require('./spread_scorer');
+const { getRealAbilityFrequency, getGlobalItemFrequency, describeItemEffect } = require('./item_optimizer');
+const { getTopAttackerSpreads, buildAttackerBuildLabel, koFromPercent } = require('./spread_scorer');
 const { effectivenessAgainst } = require('./typeChart');
 const { round } = require('./format');
 const {
@@ -152,6 +152,27 @@ function worstBuildFor(candidate, moveEntry, member, activeWeather) {
   return best;
 }
 
+// Same worst-real-build convention as worstBuildFor, but for TASK 4/5's real
+// meta diff (see computeMemberBaseline below) — every KO tier matters there
+// (3HKO -> 2HKO is as real a change as 2HKO -> OHKO), not just the
+// possible-OHKO threshold worstBuildFor gates on. Takes the defender's side
+// object directly rather than a team `member`, so it can be called against
+// both a member's CURRENT spread and a hypothetical proposed one.
+function worstAttackerBuildAny(candidate, moveEntry, defenderRow, defenderSide, activeWeather) {
+  let best = null;
+  for (const spread of candidate.attackerSpreads) {
+    const attackerSide = {
+      nature: spread.nature || 'Hardy', ability: candidate.ability, item: candidate.item, sp: spread.sp, ivs: { hp: 31 },
+    };
+    let dmg;
+    try {
+      dmg = realDamage(candidate.row, attackerSide, defenderRow, defenderSide, moveEntry.move, activeWeather);
+    } catch (_err) { continue; }
+    if (!best || dmg.max > best.dmg.max) best = { spread, attackerSide, dmg };
+  }
+  return best;
+}
+
 // Can THIS member OHKO the specific build that's threatening it, back? Reuses
 // the same shared damagePercentRange primitive team_analyzer.js's LIST 1
 // uses, but against the SPECIFIC threatening spread (LIST 1 only ever checks
@@ -174,9 +195,13 @@ function canRetaliate(member, candidate, worstBuild) {
 }
 
 // --- TASK 1 orchestration ---------------------------------------------------
-async function computeQualifyingExchanges(team, weatherAnalysis, legalPokemonSet) {
+// `precomputedCandidates` lets computeOhkoRemedies fetch the top-50 pool ONCE
+// and share it with both this exchange search and the real-meta-diff baseline
+// (computeMemberBaseline) — the same candidates/moves data was previously
+// fetched twice per run.
+async function computeQualifyingExchanges(team, weatherAnalysis, legalPokemonSet, precomputedCandidates) {
   const activeWeather = weatherAnalysis?.setters?.[0]?.weather || null;
-  const candidates = await gatherCandidateData(team, legalPokemonSet);
+  const candidates = precomputedCandidates || await gatherCandidateData(team, legalPokemonSet);
 
   const byMember = new Map(team.map((m) => [m.pokemon, { guaranteed: [], possible: [] }]));
 
@@ -493,127 +518,136 @@ function heldBy(member, item, team) {
   return teammate ? teammate.pokemon : null;
 }
 
-// --- TASK 3: consequences ---------------------------------------------------
-// Reuses the member's ALREADY-COMPUTED baseline thresholds_met (the real
-// pipeline's own scoreSpread(..., {detailed:true}) result, stored on the team
-// member object at build time) rather than recomputing it — guarantees exact
-// consistency with the rest of the report and saves a redundant full-matrix
-// pass per exchange.
-async function computeConsequences(member, fix, threatMatrix, metaContext, teamWeathersForContext) {
+// --- TASK 3/4: real-meta-diff consequences ----------------------------------
+// Replaces a previous version that diffed `thresholds_met` — the Why block's
+// filtered ATTRIBUTION TABLE (one credited threshold per stat, the subset that
+// passed scoreSpread's marginal-value guard) — and presented reshuffles in
+// THAT table as if they were battle outcomes. A berry answering fifteen real
+// matchups only ever showed the one or two that happened to sit in the table,
+// and a nature change that reassigns which threshold "explains" a stat printed
+// as a false regression even when the real survival never moved. See
+// logs/BRIEF_remedy_diff.md.
+//
+// Direct replacement: for every real attacker in the top-50 meta pool and
+// every one of its real observed top moves, compute the actual KO TIER against
+// the member's CURRENT spread and the PROPOSED spread, using this file's own
+// worst-real-build convention. Only a tier that actually crossed a boundary is
+// reported — a damage number moving without crossing one doesn't change how
+// the game plays.
+
+// koRank: higher = "dies more easily" (OHKO highest, no_ko lowest) — a tier
+// moving UP this scale is a cost (survives less), moving DOWN is a gain.
+function koRank(tier) {
+  return { no_ko: 0, '4HKO': 1, '3HKO': 2, '2HKO': 3, OHKO: 4, '1HKO': 4 }[tier] ?? -1;
+}
+
+// koFromPercent's raw tier names are internal identifiers (snake_case
+// 'no_ko') — never surface those verbatim in report text.
+function tierLabelForDisplay(tier) {
+  return tier === 'no_ko' ? 'no KO' : tier;
+}
+
+// One-time, per-member scan across the full candidate pool at the member's
+// CURRENT (already-invested) spread — the "before" side of every diff this
+// member will ever need. Computed once regardless of how many independent
+// remedy proposals follow for that member.
+async function computeMemberBaseline(member, candidates, activeWeather) {
+  const memberTypes = [member.pokemonRow.type1, member.pokemonRow.type2].filter(Boolean);
+  const beforeState = { nature: member.nature, item: member.item, sp: member.sp, ivs: { hp: 31 } };
+  const rows = [];
+  for (const candidate of candidates) {
+    for (const moveEntry of candidate.moves) {
+      const effType = resolveTypeFor(moveEntry.move, moveEntry.row.type, candidate.ability, activeWeather);
+      if (effectivenessAgainst(effType, memberTypes) === 0) continue; // immune — no tier can ever move
+      const worst = worstAttackerBuildAny(candidate, moveEntry, member.pokemonRow, beforeState, activeWeather);
+      if (!worst) continue;
+      rows.push({ candidate, moveEntry, effType, worst, beforeTier: koFromPercent(worst.dmg.max) });
+    }
+  }
+  return { memberTypes, rows };
+}
+
+function afterStateFor(member, fix) {
+  return {
+    nature: fix.nature || member.nature,
+    item: fix.item || member.item,
+    sp: { ...member.sp, hp: fix.hpSp, [fix.defKey]: fix.defSp },
+    ivs: { hp: 31 },
+  };
+}
+
+// TASK 2: plain-language "what am I giving up" line for an outgoing item —
+// items with no stat effect (Wide Lens, Focus Sash) would otherwise lose their
+// entire benefit invisibly. Reuses the one shared item-effect table
+// (item_optimizer.js's describeItemEffect) rather than a second hardcoded copy.
+function describeOutgoingItem(oldItem) {
+  const desc = describeItemEffect(oldItem);
+  return desc ? `loses ${oldItem} — ${desc}` : `loses ${oldItem}`;
+}
+
+// Many sibling exchanges propose the byte-identical fix (the same item swap
+// with no SP change fixes every attacker of that type observed in the meta) —
+// cache the diff by the exact after-state so it's computed once, not once per
+// exchange that happens to share it.
+function diffCacheKey(member, afterState) {
+  return `${member.pokemon}|${afterState.nature}|${afterState.item}|${JSON.stringify(afterState.sp)}`;
+}
+
+function computeRealConsequences(member, fix, baseline, activeWeather, diffCache) {
   if (!fix || fix.tier === 'unreachable_by_spread' || fix.tier === 'unreachable_at_all') return null;
 
   const newSp = { ...member.sp, hp: fix.hpSp, [fix.defKey]: fix.defSp };
   const check = validateSpread(newSp);
   if (!check.valid) return { error: `proposed spread failed validation: ${check.errors.join('; ')}` };
 
-  const newNature = fix.nature || member.nature;
-  const newItem = fix.item || member.item;
-  const fieldOpts = { weather: member.assumed_weather || null, _teamContext: teamWeathersForContext || [] };
+  const afterState = afterStateFor(member, fix);
+  const cacheKey = diffCacheKey(member, afterState);
+  if (diffCache.has(cacheKey)) return diffCache.get(cacheKey);
 
-  const after = await scoreSpread(member.pokemonRow, newSp, newNature, member.role, threatMatrix, metaContext,
-    { detailed: true, item: newItem, fieldOpts });
+  const costs = [];
+  const gains = [];
+  for (const { candidate, moveEntry, effType, worst, beforeTier } of baseline.rows) {
+    let afterDmg;
+    try {
+      afterDmg = realDamage(candidate.row, worst.attackerSide, member.pokemonRow, afterState, moveEntry.move, activeWeather);
+    } catch (_err) { continue; }
+    const afterTier = koFromPercent(afterDmg.max);
+    if (afterTier === beforeTier) continue; // no boundary crossed — not reportable (brief item 4)
 
-  const baselineThresholds = member.thresholds_met || [];
-  const afterThresholds = after.thresholds_met || [];
-  // TASK 6: `threat` is a RENDERED string, not a stable identity — it can
-  // change between two scoreSpread() calls for the exact same real-world
-  // threat when something about its DISPLAY changes but the underlying
-  // (attacker/target, stat) pairing does not. Confirmed live: a speed
-  // threshold's `threat` used to embed "— speed_ohko_link 3x (also OHKOs at
-  // baseline)" whenever the 0-SP-baseline OHKO check flipped, so the SAME
-  // attacker+stat threshold got a DIFFERENT key before vs. after — showing up
-  // as "lost" under the old label AND "gained" under the new one in the same
-  // diff (Whimsicott's Speed never changed; only whether the annotation was
-  // present did). Keying on the raw, un-annotated identity field each
-  // category already carries (attacker for speed/speed_tie, attacker_name for
-  // defensive, target for offensive — none of which include the annotation)
-  // fixes this at the diff, in addition to removing the annotation from the
-  // string at its source (spread_scorer.js). `threat` is kept only as a last
-  // -resort fallback for a category this function doesn't recognize.
-  const keyOf = (t) => {
-    if (t.category === 'speed' || t.category === 'speed_tie') return `${t.category}|${t.stat}|${t.attacker || ''}`;
-    if (t.category === 'defensive') return `${t.category}|${t.stat}|${t.attacker_name || ''}`;
-    if (t.category === 'offensive') return `${t.category}|${t.stat}|${t.target || ''}`;
-    return `${t.category}|${t.stat}|${t.threat || ''}`;
-  };
-  const baselineByKey = new Map(baselineThresholds.map((t) => [keyOf(t), t]));
-  const afterByKey = new Map(afterThresholds.map((t) => [keyOf(t), t]));
-
-  const lost = [];
-  const gained = [];
-  for (const [key, before] of baselineByKey) {
-    const now = afterByKey.get(key);
-    // `before.this_spread_ko` is the CURRENT (real, already-invested) spread's
-    // tier — the correct "before" value for a before/after diff.
-    // `before.baseline_ko` is a DIFFERENT thing entirely (the tier at 0 SP
-    // invested at all) and must never be shown here — an earlier version of
-    // this function pushed the raw `before` entry for every regression and
-    // rendered baseline_ko -> this_spread_ko, which described the SP=0
-    // baseline vs. the CURRENT spread, not the current spread vs. the
-    // PROPOSED one. Caught live: a real report line read "Sneasler Close
-    // Combat: 2HKO -> 3HKO" under COSTS for a PARTIAL fix that only ADDED
-    // defense — a cost line describing an improvement. Fixed by attaching the
-    // real after-value (`_after_ko`) onto the pushed entry and having the
-    // renderer use `this_spread_ko -> _after_ko` instead.
-    if (!now) { lost.push({ ...before, _after_ko: null }); continue; }
-    // koRank: higher = "dies more easily" (OHKO highest, no_ko lowest). A
-    // DEFENSIVE regression is the tier moving UP (survives less); an
-    // OFFENSIVE regression is the tier moving DOWN (kills less).
-    if (before.category === 'defensive' && before.this_spread_ko !== now.this_spread_ko && koRank(now.this_spread_ko) > koRank(before.this_spread_ko)) {
-      lost.push({ ...before, _after_ko: now.this_spread_ko }); // a survival got worse (or a KO tier regressed toward OHKO)
-    }
-    if (before.category === 'offensive' && before.this_spread_ko !== now.this_spread_ko && koRank(now.this_spread_ko) < koRank(before.this_spread_ko)) {
-      lost.push({ ...before, _after_ko: now.this_spread_ko }); // an offensive KO got worse (OHKO -> 2HKO etc.)
-    }
+    const weatherSensitive = weatherChangesDamage(moveEntry.move, effType, moveEntry.row.category, baseline.memberTypes, activeWeather,
+      { attackerItem: worst.attackerSide.item, defenderItem: afterState.item });
+    const weatherTag = weatherSensitive ? ` — assumes our ${activeWeather}` : '';
+    const usageStr = `${round(candidate.usagePct * 100, 1)}% of teams`;
+    const entry = {
+      attacker: candidate.name,
+      usagePct: candidate.usagePct,
+      line: `${candidate.name} ${moveEntry.move} ${tierLabelForDisplay(beforeTier)} -> ${tierLabelForDisplay(afterTier)} (${usageStr})${weatherTag}`,
+    };
+    if (koRank(afterTier) > koRank(beforeTier)) costs.push(entry); // moved toward death
+    else gains.push(entry); // moved away from death
   }
-  for (const [key, now] of afterByKey) {
-    if (!baselineByKey.has(key)) gained.push(now);
-  }
+  costs.sort((a, b) => b.usagePct - a.usagePct);
+  gains.sort((a, b) => b.usagePct - a.usagePct);
 
-  return {
-    new_sp: newSp, new_nature: newNature, new_item: newItem,
-    new_total: STAT_ORDER_SUM(newSp),
-    lost, gained,
-    no_change: lost.length === 0 && gained.length === 0,
+  const itemChanged = lower(afterState.item) !== lower(member.item);
+  const result = {
+    new_sp: newSp, new_nature: afterState.nature, new_item: afterState.item,
+    outgoing_item_note: itemChanged ? describeOutgoingItem(member.item) : null,
+    costs, gains,
   };
-}
-
-// koRank: higher = "dies more easily" for defensive tiers / "kills more
-// easily" for offensive tiers — see the regression checks above.
-function koRank(tier) {
-  return { no_ko: 0, '4HKO': 1, '3HKO': 2, '2HKO': 3, OHKO: 4, '1HKO': 4 }[tier] ?? -1;
-}
-function STAT_ORDER_SUM(sp) {
-  return ['hp', 'atk', 'def', 'spa', 'spd', 'spe'].reduce((s, k) => s + (sp[k] || 0), 0);
+  diffCache.set(cacheKey, result);
+  return result;
 }
 
 // TASK 5's DEFAULT CRITERION for choosing among multiple successful remedy
 // options (SP/nature alone, item alone, or the item+SP fallback): the option
-// that loses the least USAGE-WEIGHTED value — a lost threshold against a
+// that costs the least USAGE-WEIGHTED value elsewhere — a lost tier against a
 // heavily-used real Pokemon costs far more than the identical loss against a
-// barely-played one. Each lost threshold already names (or can be resolved
-// to) the real Pokemon it concerns: `target_usage_percent` for offensive
-// thresholds (the Pokemon we're attacking), `attacker_name` for defensive
-// ones, `attacker` for speed/speed-tie ones — resolved against the same
-// top-50 real usage pool this file already draws candidates from, so a name
-// with no entry there (outside the top 50) weighs 0, not undefined.
-let usageFractionByNameLower = null;
-async function usageFractionFor(name) {
-  if (!usageFractionByNameLower) {
-    const rows = await getTop50UsageRows();
-    usageFractionByNameLower = new Map(rows.map((r) => [r.pokemon_name.toLowerCase(), round(parseFloat(r.usage_percent) / 100, 4)]));
-  }
-  return usageFractionByNameLower.get((name || '').toLowerCase()) || 0;
-}
-async function usageWeightedLoss(consequences) {
-  if (!consequences || !consequences.lost || consequences.lost.length === 0) return 0;
-  let total = 0;
-  for (const t of consequences.lost) {
-    if (t.category === 'offensive') total += round(parseFloat(t.target_usage_percent) / 100, 4) || 0;
-    else if (t.category === 'defensive') total += await usageFractionFor(t.attacker_name);
-    else total += await usageFractionFor(t.attacker);
-  }
-  return round(total, 4);
+// barely-played one. `costs` entries already carry the real candidate's own
+// top-50 usage fraction directly, no separate lookup needed.
+function usageWeightedLoss(consequences) {
+  if (!consequences || !consequences.costs || consequences.costs.length === 0) return 0;
+  return round(consequences.costs.reduce((sum, c) => sum + c.usagePct, 0), 4);
 }
 
 // --- Top-level orchestration -------------------------------------------------
@@ -623,17 +657,27 @@ async function usageWeightedLoss(consequences) {
 // to guaranteed exchanges only ("For every qualifying exchange from TASK 1,
 // search for a change... that removes the OHKO" — "qualifying" is TASK 1's
 // A/B definition, which excludes merely-possible OHKOs).
-async function computeOhkoRemedies(team, weatherAnalysis, legalPokemonSet, threatMatrix, metaContext, teamWeathersForContext) {
-  const { byMember, guaranteedTotal, possibleTotal } = await computeQualifyingExchanges(team, weatherAnalysis, legalPokemonSet);
+async function computeOhkoRemedies(team, weatherAnalysis, legalPokemonSet) {
+  const activeWeather = weatherAnalysis?.setters?.[0]?.weather || null;
+  // Fetched ONCE and shared with computeQualifyingExchanges (TASK 1's search)
+  // and computeMemberBaseline (the real-meta-diff below) — previously each
+  // fetched its own copy of the same top-50 pool + real top moves.
+  const candidates = await gatherCandidateData(team, legalPokemonSet);
+  const { byMember, guaranteedTotal, possibleTotal } = await computeQualifyingExchanges(team, weatherAnalysis, legalPokemonSet, candidates);
 
   const counts = { qualifying: guaranteedTotal, possible: possibleTotal, fixed: 0, partial: 0, unreachable_spread: 0, unreachable_all: 0 };
   const byMemberResult = new Map();
+  // Keyed by exact after-state signature (see diffCacheKey) — many sibling
+  // exchanges for the same member propose the byte-identical fix.
+  const diffCache = new Map();
 
   for (const member of team) {
     const { guaranteed, possible } = byMember.get(member.pokemon);
+    const baseline = await computeMemberBaseline(member, candidates, activeWeather);
     const entries = [];
     for (const exchange of guaranteed) {
       const fix = await searchRemedy(member, exchange, team);
+      const weatherForFix = activeWeatherFor(exchange);
       if (fix.options) {
         // TASK 5: 1+ independent options succeeded (SP/nature alone, item
         // alone, or the item+SP fallback). Score every one's real consequences
@@ -643,8 +687,8 @@ async function computeOhkoRemedies(team, weatherAnalysis, legalPokemonSet, threa
         counts.fixed++;
         const scored = [];
         for (const opt of fix.options) {
-          const cons = await computeConsequences(member, opt, threatMatrix, metaContext, teamWeathersForContext);
-          const lossWeight = await usageWeightedLoss(cons);
+          const cons = computeRealConsequences(member, opt, baseline, weatherForFix, diffCache);
+          const lossWeight = usageWeightedLoss(cons);
           scored.push({ fix: opt, consequences: cons, lossWeight });
         }
         scored.sort((a, b) => a.lossWeight - b.lossWeight);
@@ -657,9 +701,9 @@ async function computeOhkoRemedies(team, weatherAnalysis, legalPokemonSet, threa
         counts.partial++;
         // Task 3 applies to PARTIAL too ("For every FIXED or PARTIAL
         // proposal...") — normalize the nested partial.* fields to the flat
-        // shape computeConsequences expects.
+        // shape computeRealConsequences expects.
         const p = fix.partial;
-        consequences = await computeConsequences(member, { hpSp: p.hpSp, defSp: p.defSp, nature: p.nature, item: p.item, defKey: fix.defKey, tier: 'partial' }, threatMatrix, metaContext, teamWeathersForContext);
+        consequences = computeRealConsequences(member, { hpSp: p.hpSp, defSp: p.defSp, nature: p.nature, item: p.item, defKey: fix.defKey, tier: 'partial' }, baseline, weatherForFix, diffCache);
       } else if (fix.tier === 'unreachable_by_spread') {
         counts.unreachable_spread++;
       } else {
@@ -727,37 +771,19 @@ function renderFixLine(fix, exchange, member) {
   return [`    ${tierLabel(fix.tier)}: ${desc} (was ${wasDesc})${itemChange}${newDmgNote}`];
 }
 
+// Always emits both a COSTS and a GAINS line (brief item 6) — a proposal with
+// no cost is still worth confirming has none, not silently omitted.
 function renderConsequences(consequences) {
   if (!consequences) return [];
   if (consequences.error) return [`    CONSEQUENCES: ${consequences.error}`];
-  const lines = [];
-  if (consequences.no_change) {
-    lines.push('    COSTS: none — no threshold lost or gained by this change');
-    return lines;
-  }
-  if (consequences.lost.length > 0) {
-    const parts = consequences.lost.map((t) => {
-      if (t.category === 'speed' || t.category === 'speed_tie') return `no longer ${t.threat}`;
-      // this_spread_ko is the CURRENT spread's real tier; _after_ko is what
-      // the proposed spread gets. A DISAPPEARED entry (_after_ko === null)
-      // is NOT necessarily a death — scoreSpread's thresholds_met lists one
-      // BINDING threshold per stat (see spread_scorer.js), so a threshold
-      // can vanish from the list because a different threat became the
-      // cited reason for that same stat's investment, not because the old
-      // one stopped being survived. Worded to avoid the false claim.
-      if (t._after_ko === null) return `${t.threat}: no longer the cited reason for its SP (was ${t.this_spread_ko || '?'} — may still be survived via a different attribution)`;
-      return `${t.threat}: ${t.this_spread_ko || '?'} -> ${t._after_ko}`;
-    });
-    lines.push(`    COSTS: ${parts.join(' | ')}`);
-  }
-  if (consequences.gained.length > 0) {
-    const parts = consequences.gained.map((t) => {
-      if (t.category === 'speed' || t.category === 'speed_tie') return t.threat;
-      return `${t.threat}: now ${t.this_spread_ko}`;
-    });
-    lines.push(`    GAINS: ${parts.join(' | ')}`);
-  }
-  return lines;
+  const costParts = [];
+  if (consequences.outgoing_item_note) costParts.push(consequences.outgoing_item_note);
+  costParts.push(...consequences.costs.map((c) => c.line));
+  const gainParts = consequences.gains.map((g) => g.line);
+  return [
+    `    COSTS: ${costParts.length > 0 ? costParts.join(' | ') : 'none'}`,
+    `    GAINS: ${gainParts.length > 0 ? gainParts.join(' | ') : 'none'}`,
+  ];
 }
 
 // Groups by member (mandatory per the brief), then by attacker within a
@@ -819,7 +845,7 @@ function renderOhkoRemedies(result) {
 module.exports = {
   computeQualifyingExchanges,
   searchRemedy,
-  computeConsequences,
+  computeRealConsequences,
   computeOhkoRemedies,
   renderOhkoRemedies,
   rollOdds,
