@@ -19,9 +19,8 @@
 const { calcStat, natureMultiplierFor, SP_BUDGET_TOTAL, SP_CAP_PER_STAT } = require('./stat_formula');
 const { validateSpread } = require('./spread_optimizer');
 const { weatherChangesDamage, resolveTypeFor } = require('./weather_rules');
-const { RESIST_BERRIES, MULTI_HIT_MOVES } = require('./nerd_of_now_calc');
-const { getSpeciesRow, getCommonItems, getTopDamageAffectingItem, getCommonSpeedTiers } = require('./ev_observations');
-const { getRealAbilityFrequency } = require('./item_optimizer');
+const { getSpeciesRow, getTopDamageAffectingItem, getCommonSpeedTiers } = require('./ev_observations');
+const { getRealAbilityFrequency, getGlobalItemFrequency } = require('./item_optimizer');
 const { getTopAttackerSpreads, buildAttackerBuildLabel, scoreSpread } = require('./spread_scorer');
 const { effectivenessAgainst } = require('./typeChart');
 const { round } = require('./format');
@@ -42,13 +41,27 @@ const MOVES_PER_CANDIDATE = 10;
 // tried and the cheaper fix wins.
 const BOOSTING_NATURES = { def: ['Bold', 'Impish'], spd: ['Calm', 'Careful'] };
 
-const RESIST_BERRY_FOR_TYPE = Object.fromEntries(
-  Object.entries(RESIST_BERRIES).map(([berry, type]) => [type, berry])
-);
-
 const lower = (s) => String(s || '').toLowerCase();
 const isMegaMember = (member) => (member.pokemon || '').includes('-Mega');
-const isMultiHitMove = (moveName) => !!MULTI_HIT_MOVES[lower(moveName)];
+
+// Focus Sash caps damagePercentRange's min/max below 100 so downstream
+// "min >= 100 means OHKO" checks stay correct without knowing about the item.
+// That is exactly backwards for THIS file: everything survives a first hit
+// with Sash, so a Sash holder's real capped figure (e.g. 99.5-99.5%) reads as
+// "already fine" to every guard in this module — worstBuildFor's qualifying
+// check, the remedy tiers' own-item baseline, and the item-candidate search
+// all silently treat the cap as a real survival instead of the near-OHKO it
+// actually is. The owner's instruction is that Sash is irrelevant to this
+// search entirely, so every damage figure computed here uses the RAW
+// (uncapped) percentage — `raw_min_percent`/`raw_max_percent`, which
+// damagePercentRange always populates and which equal min/max whenever no
+// Sash is involved. Every damagePercentRange call in this file must go
+// through this wrapper, never the raw import directly.
+function realDamage(...args) {
+  const dmg = damagePercentRange(...args);
+  if (!dmg) return dmg;
+  return { ...dmg, min: dmg.raw_min_percent, max: dmg.raw_max_percent };
+}
 
 // Real max HP for a hypothetical hp-SP value — used to turn a raw damage
 // integer into a percentage.
@@ -131,7 +144,7 @@ function worstBuildFor(candidate, moveEntry, member, activeWeather) {
     };
     let dmg;
     try {
-      dmg = damagePercentRange(candidate.row, attackerSide, member.pokemonRow, defenderSide, moveEntry.move, activeWeather);
+      dmg = realDamage(candidate.row, attackerSide, member.pokemonRow, defenderSide, moveEntry.move, activeWeather);
     } catch (_err) { continue; }
     if (!best || dmg.max > best.dmg.max) best = { spread, attackerSide, dmg };
   }
@@ -153,7 +166,7 @@ function canRetaliate(member, candidate, worstBuild) {
     const ourSide = { nature: member.nature, item: member.item, ability: member.ability, sp: member.sp, ivs: { hp: 31 } };
     let dmg;
     try {
-      dmg = damagePercentRange(member.pokemonRow, ourSide, candidate.row, theirDefSide, mv.move, member.assumed_weather);
+      dmg = realDamage(member.pokemonRow, ourSide, candidate.row, theirDefSide, mv.move, member.assumed_weather);
     } catch (_err) { continue; }
     if (dmg.min >= 100) return true;
   }
@@ -184,7 +197,7 @@ async function computeQualifyingExchanges(team, weatherAnalysis, legalPokemonSet
         if (weatherChangesDamage(moveEntry.move, effType, moveEntry.row.category, memberTypes, activeWeather,
           { attackerItem: worstBuild.attackerSide.item, defenderItem: member.item })) {
           try {
-            const noWeather = damagePercentRange(candidate.row, worstBuild.attackerSide, member.pokemonRow,
+            const noWeather = realDamage(candidate.row, worstBuild.attackerSide, member.pokemonRow,
               { nature: member.nature, item: member.item, sp: member.sp, ivs: { hp: 31 } }, moveEntry.move, null);
             weatherNote = `Our ${activeWeather} changes this — without it: ${noWeather.min}-${noWeather.max}%`;
           } catch (_err) { /* skip — primary number still stands */ }
@@ -270,7 +283,7 @@ function twoVarSpSearch(member, exchange, nature, item, otherSpend) {
       const side = { nature, item, sp, ivs: { hp: 31 } };
       let dmg;
       try {
-        dmg = damagePercentRange(exchange.candidate.row, worstBuild.attackerSide, member.pokemonRow, side, move, activeWeatherFor(exchange));
+        dmg = realDamage(exchange.candidate.row, worstBuild.attackerSide, member.pokemonRow, side, move, activeWeatherFor(exchange));
       } catch (_err) { lo = mid + 1; continue; }
       if (dmg.max < 100) { found = mid; hi = mid - 1; } else { lo = mid + 1; }
     }
@@ -305,7 +318,7 @@ function twoVarSpSearch(member, exchange, nature, item, otherSpend) {
   const finalSide = { nature, item, sp: finalSp, ivs: { hp: 31 } };
   let finalDmg;
   try {
-    finalDmg = damagePercentRange(exchange.candidate.row, worstBuild.attackerSide, member.pokemonRow, finalSide, move, activeWeatherFor(exchange));
+    finalDmg = realDamage(exchange.candidate.row, worstBuild.attackerSide, member.pokemonRow, finalSide, move, activeWeatherFor(exchange));
   } catch (_err) {
     return null; // should not happen — adding SP can only help, never break a working combo
   }
@@ -338,7 +351,7 @@ function bestEffort(member, exchange, nature, item, otherSpend) {
   const side = { nature, item, sp, ivs: { hp: 31 } };
   let dmg;
   try {
-    dmg = damagePercentRange(exchange.candidate.row, exchange.worstBuild.attackerSide, member.pokemonRow, side, exchange.move, activeWeatherFor(exchange));
+    dmg = realDamage(exchange.candidate.row, exchange.worstBuild.attackerSide, member.pokemonRow, side, exchange.move, activeWeatherFor(exchange));
   } catch (_err) { return null; }
   return { hpSp, defSp, nature, item, dmg };
 }
@@ -367,35 +380,35 @@ async function searchRemedy(member, exchange, team) {
 
   // TIER 3 — item change. Skipped for Mega members (the Mega Stone is
   // mandatory — see archetype_swaps.js's isMegaBuild precedent for the same
-  // exclusion). Candidates come ONLY from real observed data
-  // (getCommonItems) — never a hardcoded list (see CLAUDE.md's Assault Vest
-  // incident this brief explicitly warns against repeating).
+  // exclusion). Candidates are EVERY real item observed anywhere in
+  // tournament play (getGlobalItemFrequency — tournament_teams AND
+  // ev_observations, dex-normalized, junk dropped), never scoped to this
+  // member's own species and never a hardcoded list (see CLAUDE.md's Assault
+  // Vest incident). Tried in descending real-usage order so common items are
+  // reached first — an ORDER, not a filter: the loop still runs to
+  // exhaustion (or until something returns a FIXED verdict) rather than
+  // stopping at some fixed candidate count.
+  //
+  // Focus Sash is excluded outright. It is not a fix for the SP/matchup
+  // problem this search exists to find — literally any Pokemon at full HP
+  // survives literally any single hit while holding it, so offering it here
+  // would "solve" every exchange the same trivial way regardless of the real
+  // matchup (owner's instruction: it is "essentially irrelevant" to this
+  // search). It remains a normal candidate for the real team-building item
+  // optimizer (item_optimizer.js) — this exclusion is scoped to this file.
   //
   // An item already held by a teammate (ITEM CLAUSE conflict) is NEVER
   // allowed to produce a FIXED verdict on its own — taking it from that
   // teammate leaves THEM unfixed, a knock-on cost this per-member search does
   // not solve. It is tracked separately (conflictedFix) and surfaced as a
-  // footnote under whatever the real verdict ends up being — matching the
-  // brief's own worked example ("UNREACHABLE BY SPREAD ... Focus Sash
-  // survives one hit but is held by Whimsicott").
+  // footnote under whatever the real verdict ends up being.
   const itemNotes = [];
   let conflictedFix = null;
   if (!isMegaMember(member)) {
-    const observed = await getCommonItems(member.pokemon.toLowerCase(), 20);
-    const observedMap = new Map(observed.map((i) => [lower(i.item), i]));
-    const itemCandidates = [];
-    if (!isMultiHitMove(exchange.move) && observedMap.has('focus sash') && lower(member.item) !== 'focus sash') {
-      itemCandidates.push('Focus Sash');
-    }
-    const berry = RESIST_BERRY_FOR_TYPE[exchange.move_type];
-    if (berry && observedMap.has(lower(berry)) && lower(member.item) !== lower(berry)) {
-      itemCandidates.push(berry);
-    }
-    // Disclose observed-but-not-applicable / not-observed-at-all, per the
-    // brief's item rules: absence from the observed pool is a finding, not
-    // silently skipped.
-    if (!observedMap.has('focus sash')) itemNotes.push('Focus Sash not in observed item pool for this species');
-    if (berry && !observedMap.has(lower(berry))) itemNotes.push(`${berry} not in observed item pool for this species`);
+    const globalFrequency = await getGlobalItemFrequency();
+    const itemCandidates = globalFrequency
+      .map((entry) => entry.item)
+      .filter((item) => lower(item) !== 'focus sash' && lower(item) !== lower(member.item));
 
     for (const item of itemCandidates) {
       const conflictOwner = heldBy(member, item, team);
@@ -404,7 +417,7 @@ async function searchRemedy(member, exchange, team) {
       const sideAlone = { nature: member.nature, item, sp: member.sp, ivs: { hp: 31 } };
       let dmgAlone;
       try {
-        dmgAlone = damagePercentRange(exchange.candidate.row, exchange.worstBuild.attackerSide, member.pokemonRow, sideAlone, exchange.move, activeWeatherFor(exchange));
+        dmgAlone = realDamage(exchange.candidate.row, exchange.worstBuild.attackerSide, member.pokemonRow, sideAlone, exchange.move, activeWeatherFor(exchange));
       } catch (_err) { dmgAlone = null; }
       if (dmgAlone && dmgAlone.max < 100) {
         const result = { tier: 'item', hpSp: member.sp.hp || 0, defSp: member.sp[defKey] || 0, cost: 0, nature: member.nature, item, defKey, dmg: dmgAlone };
@@ -424,9 +437,9 @@ async function searchRemedy(member, exchange, team) {
   }
 
   // Final classification, in priority order (FIXED already returned above):
-  // a conflicted item that WOULD fully fix it beats a mere partial (matches
-  // the brief's own worked example — spread alone can't, but an item that
-  // exists, just held elsewhere, can); otherwise fall back to PARTIAL
+  // a conflicted item that WOULD fully fix it beats a mere partial (spread
+  // alone can't, but a real item that exists, just held elsewhere, can);
+  // otherwise fall back to PARTIAL
   // ("survives some rolls") when anything found at least got min% below 100;
   // otherwise nothing helped at all.
   if (conflictedFix) {
@@ -722,5 +735,4 @@ module.exports = {
   renderOhkoRemedies,
   rollOdds,
   maxHpFor,
-  RESIST_BERRY_FOR_TYPE,
 };

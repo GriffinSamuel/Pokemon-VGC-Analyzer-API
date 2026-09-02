@@ -1,4 +1,5 @@
 const pool = require('../db/pool');
+const { Dex } = require('@pkmn/dex');
 const { getCommonItems } = require('./ev_observations');
 const { calcStat, SP_CAP_PER_STAT } = require('./stat_formula');
 const { BULKY_TOTAL_THRESHOLD } = require('./role_classifier');
@@ -65,24 +66,56 @@ function itemCoherencePenalty(itemName, role) {
 function isDamageBoostingItem(itemName) {
   return DAMAGE_BOOSTING_ITEMS.has((itemName || '').toLowerCase());
 }
-// Real, observed, global item frequency across every scraped team — the same
-// tournament_teams source getScoredCandidateItems' real candidates ultimately
-// come from (via getCommonItems), just not scoped to one species. Queried
-// once and memoized for the process lifetime (mirrors this file's other
-// small reference tables); only consulted by pickGenericFallback below, which
-// itself only fires when a Pokemon's own real per-species candidates are all
-// claimed by higher-priority teammates.
+// Real, observed, global item frequency across EVERY scraped source (both
+// tournament_teams and ev_observations) — not scoped to one species. This is
+// the pool any "every item is an option for every Pokemon" search should
+// draw from: species-scoped lookups (getCommonItems) answer a narrower
+// question ("what has THIS species been seen holding") that this function
+// deliberately does not ask.
+//
+// Raw scraped item strings are not normalised at the source (e.g.
+// 'gardevoirite' vs 'Gardevoirite', 'focussash', 'lumberry', and outright
+// non-items like 'No Items' / 'Nothing' / ''). Rather than hand-write a
+// normalization/exclusion table — which would silently drift the moment a
+// new raw variant or junk value showed up in a future scrape — every raw
+// string is resolved through @pkmn/dex's own item lookup (which already
+// folds case/spacing via its `toID` normalization, the same tool this
+// codebase's recurring-defect notes call out for NOT being used in the
+// Pokemon-name case). A string the dex does not recognize as a real item is
+// dropped as junk; verified live against the full corpus (131 distinct raw
+// strings) this drops exactly 4: 'No Item', 'No Items', 'Nothing' (the
+// legitimate no-item markers) and 'Staraptornite' (a scraper artifact —
+// Staraptor has no real Mega Evolution), leaving 121 real canonical items,
+// each counted once per raw variant folded into it.
+//
+// Queried once and memoized for the process lifetime (mirrors this file's
+// other small reference tables).
 let globalItemFrequencyCache = null;
 async function getGlobalItemFrequency() {
   if (globalItemFrequencyCache) return globalItemFrequencyCache;
-  const { rows } = await pool.query(
-    `SELECT p->>'item' as item, COUNT(*) as count
-     FROM tournament_teams t, jsonb_array_elements(t.pokemon) p
-     WHERE p->>'item' IS NOT NULL AND p->>'item' != ''
-       AND LOWER(p->>'item') NOT IN ('no item', 'no items', 'nothing', 'none')
-     GROUP BY p->>'item' ORDER BY count DESC`
-  );
-  globalItemFrequencyCache = rows.map((r) => ({ item: r.item, count: parseInt(r.count, 10) }));
+  const [{ rows: fromTeams }, { rows: fromObservations }] = await Promise.all([
+    pool.query(
+      `SELECT p->>'item' as item, COUNT(*) as count
+       FROM tournament_teams t, jsonb_array_elements(t.pokemon) p
+       WHERE p->>'item' IS NOT NULL AND p->>'item' != ''
+       GROUP BY p->>'item'`
+    ),
+    pool.query(
+      `SELECT item, COUNT(*) as count FROM ev_observations
+       WHERE item IS NOT NULL AND item != ''
+       GROUP BY item`
+    ),
+  ]);
+  const counts = new Map(); // canonical dex name -> count
+  for (const row of [...fromTeams, ...fromObservations]) {
+    const dexItem = Dex.items.get(row.item);
+    if (!dexItem || !dexItem.exists) continue; // junk / no-item marker, not a real item
+    const prior = counts.get(dexItem.name) || 0;
+    counts.set(dexItem.name, prior + parseInt(row.count, 10));
+  }
+  globalItemFrequencyCache = Array.from(counts.entries())
+    .map(([item, count]) => ({ item, count }))
+    .sort((a, b) => b.count - a.count);
   return globalItemFrequencyCache;
 }
 
