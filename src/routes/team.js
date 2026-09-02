@@ -453,7 +453,7 @@ const ITEM_REASON_TEMPLATES = {
 
 function generateItemReason(assignment, ability, teamWeatherContext) {
   var base = ITEM_REASON_TEMPLATES[assignment.item.toLowerCase()]
-    || ("Most common real observed item for this role (fit score " + assignment.score + ").");
+    || "Most common real observed item for this role.";
   var result;
   if (assignment.source === "generic_fallback") {
     result = base + " (Generic fallback — this Pokemon's real observed candidates were all claimed by higher-priority teammates.)";
@@ -480,14 +480,13 @@ function generateItemReason(assignment, ability, teamWeatherContext) {
       costText = "no modeled cost for this item";
     }
     if (assignment.source.endsWith("_value_kept")) {
-      result = base + " (Kept over " + (assignment.value_alt_item || "the alternative") + " — " + benefitText + "; " + costText + ". Net " + ve.net + " = benefit " + ve.benefit + " - cost " + ve.cost + ".)";
+      result = base + " (Kept over " + (assignment.value_alt_item || "the alternative") + " — " + benefitText + "; " + costText + ".)";
     } else {
-      result = base + " (Reassigned from " + (assignment.value_prior_item || "a damage-boosting item") + " — " + benefitText + "; " + costText + ". Net " + ve.net + " = benefit " + ve.benefit + " - cost " + ve.cost + " did not clear the meaningful-difference threshold.)";
+      result = base + " (Reassigned from " + (assignment.value_prior_item || "a damage-boosting item") + " — " + benefitText + "; " + costText + ". Not enough of an advantage over this item to justify keeping the other one instead.)";
     }
   } else if (assignment.next_best) {
-    var loss = round(assignment.score - assignment.next_best.score, 3);
     var baseTrimmed = base.replace(/\.\s*$/, "");
-    result = baseTrimmed + ". Next best was " + assignment.next_best.item + " (loss: " + loss + " score vs. " + assignment.item + ").";
+    result = baseTrimmed + ". Next best was " + assignment.next_best.item + ".";
   } else {
     result = base;
   }
@@ -860,7 +859,7 @@ function describeSpeedThresholdForWhy(t) {
     freqPart = ` — ${pct}% of ${attackerName}`;
     if (pct < 50) freqPart += ' (minority — most observed spreads run a different Speed)';
   }
-  const linkSuffix = t.speed_ohko_link ? ' — speed_ohko_link 3x (also OHKOs at baseline)' : '';
+  const linkSuffix = t.speed_ohko_link ? ' — this attacker also OHKOs us with zero SP invested, so outspeeding it is the only defense' : '';
   return `outspeeds ${attackerName} (${detailParts.join(', ')}${freqPart})${linkSuffix}`;
 }
 function describeThresholdForWhy(t, allDefensiveThresholds, statKey) {

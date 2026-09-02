@@ -1163,7 +1163,7 @@ async function scoreSpread(pokemon, sp, nature, role, threatMatrix, metaContext,
           met.push({
             category: 'speed',
             stat: 'spe',
-            threat: `Outspeed ${threat.attacker} (${topTier.nature || ''} ${topTier.speed_stat})${baselineOhkoes ? ' — speed_ohko_link 3x (also OHKOs at baseline)' : ''}`.trim(),
+            threat: `Outspeed ${threat.attacker} (${topTier.nature || ''} ${topTier.speed_stat})`.trim(),
             baseline_ko: null, this_spread_ko: null,
             attacker: threat.attacker,
             speed_sp: topTier.spe_sp,

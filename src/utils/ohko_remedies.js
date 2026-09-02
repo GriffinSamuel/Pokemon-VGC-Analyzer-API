@@ -356,6 +356,15 @@ function bestEffort(member, exchange, nature, item, otherSpend) {
   return { hpSp, defSp, nature, item, dmg };
 }
 
+// TASK 5: rather than returning whichever tier happens to be tried first (an
+// SP-only fix always came first in tier order, but the search almost always
+// fell through to an item change anyway — because a real guaranteed OHKO
+// usually cannot be solved within the SP already free for hp/defKey alone),
+// this evaluates SP/nature-only and item-only fixes INDEPENDENTLY, only falls
+// back to a combined item+SP search if NEITHER works alone, and returns every
+// option that succeeded so the caller can pick the one that costs the least
+// (see computeOhkoRemedies's usage-weighted selection) rather than whichever
+// was found first.
 async function searchRemedy(member, exchange, team) {
   const { def_key: defKey } = exchange;
   const otherSpend = SP_BUDGET_TOTAL - (member.sp.hp || 0) - (member.sp[defKey] || 0);
@@ -365,29 +374,34 @@ async function searchRemedy(member, exchange, team) {
     if (cand.dmg.min < 100 && (!bestPartial || cand.dmg.max < bestPartial.dmg.max)) bestPartial = cand;
   };
 
-  // TIER 1 — SP only, current nature + item.
-  let fix = twoVarSpSearch(member, exchange, member.nature, member.item, otherSpend);
-  if (fix) return { tier: 'sp', ...fix, defKey };
-  trackPartial(bestEffort(member, exchange, member.nature, member.item, otherSpend));
-
-  // TIER 2 — nature change, current item.
-  const natureCandidates = (BOOSTING_NATURES[defKey] || []).filter((n) => lower(n) !== lower(member.nature));
-  for (const nature of natureCandidates) {
-    fix = twoVarSpSearch(member, exchange, nature, member.item, otherSpend);
-    if (fix) return { tier: 'nature', ...fix, defKey };
-    trackPartial(bestEffort(member, exchange, nature, member.item, otherSpend));
+  // OPTION A — SP/nature change, item held FIXED at its current value.
+  // Current nature tried first, then each boosting nature; first success wins
+  // (a nature change is a strictly bigger commitment than a pure SP move, so
+  // there is no reason to keep searching nature candidates once the current
+  // one already works).
+  let spOption = twoVarSpSearch(member, exchange, member.nature, member.item, otherSpend);
+  if (spOption) spOption = { tier: 'sp', ...spOption, defKey };
+  else trackPartial(bestEffort(member, exchange, member.nature, member.item, otherSpend));
+  if (!spOption) {
+    const natureCandidates = (BOOSTING_NATURES[defKey] || []).filter((n) => lower(n) !== lower(member.nature));
+    for (const nature of natureCandidates) {
+      const fix = twoVarSpSearch(member, exchange, nature, member.item, otherSpend);
+      if (fix) { spOption = { tier: 'nature', ...fix, defKey }; break; }
+      trackPartial(bestEffort(member, exchange, nature, member.item, otherSpend));
+    }
   }
 
-  // TIER 3 — item change. Skipped for Mega members (the Mega Stone is
-  // mandatory — see archetype_swaps.js's isMegaBuild precedent for the same
-  // exclusion). Candidates are EVERY real item observed anywhere in
-  // tournament play (getGlobalItemFrequency — tournament_teams AND
-  // ev_observations, dex-normalized, junk dropped), never scoped to this
-  // member's own species and never a hardcoded list (see CLAUDE.md's Assault
-  // Vest incident). Tried in descending real-usage order so common items are
-  // reached first — an ORDER, not a filter: the loop still runs to
-  // exhaustion (or until something returns a FIXED verdict) rather than
-  // stopping at some fixed candidate count.
+  // OPTION B — item change alone, SP/nature held FIXED at their current
+  // values. Skipped for Mega members (the Mega Stone is mandatory — see
+  // archetype_swaps.js's isMegaBuild precedent for the same exclusion).
+  // Candidates are EVERY real item observed anywhere in tournament play
+  // (getGlobalItemFrequency — tournament_teams AND ev_observations,
+  // dex-normalized, junk dropped), never scoped to this member's own species
+  // and never a hardcoded list (see CLAUDE.md's Assault Vest incident). Tried
+  // in descending real-usage order so common items are reached first — an
+  // ORDER, not a filter: the loop still runs to exhaustion looking for the
+  // first non-conflicted success rather than stopping at some fixed
+  // candidate count.
   //
   // Focus Sash is excluded outright. It is not a fix for the SP/matchup
   // problem this search exists to find — literally any Pokemon at full HP
@@ -404,6 +418,7 @@ async function searchRemedy(member, exchange, team) {
   // footnote under whatever the real verdict ends up being.
   const itemNotes = [];
   let conflictedFix = null;
+  let itemOption = null;
   if (!isMegaMember(member)) {
     const globalFrequency = await getGlobalItemFrequency();
     const itemCandidates = globalFrequency
@@ -412,36 +427,57 @@ async function searchRemedy(member, exchange, team) {
 
     for (const item of itemCandidates) {
       const conflictOwner = heldBy(member, item, team);
-
-      // Item alone (0 extra SP) first — cheapest possible fix.
       const sideAlone = { nature: member.nature, item, sp: member.sp, ivs: { hp: 31 } };
       let dmgAlone;
       try {
         dmgAlone = realDamage(exchange.candidate.row, exchange.worstBuild.attackerSide, member.pokemonRow, sideAlone, exchange.move, activeWeatherFor(exchange));
       } catch (_err) { dmgAlone = null; }
-      if (dmgAlone && dmgAlone.max < 100) {
-        const result = { tier: 'item', hpSp: member.sp.hp || 0, defSp: member.sp[defKey] || 0, cost: 0, nature: member.nature, item, defKey, dmg: dmgAlone };
-        if (conflictOwner) { conflictedFix = conflictedFix || { item, teammate: conflictOwner, dmg: dmgAlone }; }
-        else return result;
-      }
       if (dmgAlone) trackPartial({ hpSp: member.sp.hp || 0, defSp: member.sp[defKey] || 0, nature: member.nature, item, dmg: dmgAlone });
+      if (dmgAlone && dmgAlone.max < 100) {
+        if (conflictOwner) {
+          conflictedFix = conflictedFix || { item, teammate: conflictOwner, dmg: dmgAlone };
+        } else if (!itemOption) {
+          itemOption = { tier: 'item', hpSp: member.sp.hp || 0, defSp: member.sp[defKey] || 0, cost: 0, nature: member.nature, item, defKey, dmg: dmgAlone };
+          break;
+        }
+      }
+    }
+  }
 
-      // Item + SP, current nature.
-      fix = twoVarSpSearch(member, exchange, member.nature, item, otherSpend);
+  // OPTION C — item + SP together. Only searched when NEITHER option above
+  // worked alone — per the brief, this is a fallback, not a third equal
+  // choice: if either SP alone or an item alone already fixes it, there is no
+  // reason to additionally spend SP AND give up an item slot together.
+  let combinedOption = null;
+  if (!spOption && !itemOption && !isMegaMember(member)) {
+    const globalFrequency = await getGlobalItemFrequency();
+    const itemCandidates = globalFrequency
+      .map((entry) => entry.item)
+      .filter((item) => lower(item) !== 'focus sash' && lower(item) !== lower(member.item));
+    for (const item of itemCandidates) {
+      const conflictOwner = heldBy(member, item, team);
+      const fix = twoVarSpSearch(member, exchange, member.nature, item, otherSpend);
       if (fix) {
-        if (conflictOwner) { conflictedFix = conflictedFix || { item, teammate: conflictOwner, dmg: null, fix }; }
-        else return { tier: 'item+sp', ...fix, defKey };
+        if (conflictOwner) {
+          conflictedFix = conflictedFix || { item, teammate: conflictOwner, dmg: null, fix };
+        } else {
+          combinedOption = { tier: 'item+sp', ...fix, defKey };
+          break;
+        }
       }
       trackPartial(bestEffort(member, exchange, member.nature, item, otherSpend));
     }
   }
 
-  // Final classification, in priority order (FIXED already returned above):
-  // a conflicted item that WOULD fully fix it beats a mere partial (spread
-  // alone can't, but a real item that exists, just held elsewhere, can);
-  // otherwise fall back to PARTIAL
-  // ("survives some rolls") when anything found at least got min% below 100;
-  // otherwise nothing helped at all.
+  const options = [spOption, itemOption, combinedOption].filter(Boolean);
+  if (options.length > 0) return { options, defKey, itemNotes };
+
+  // Nothing succeeded, in any category — fall back to the existing
+  // PARTIAL/UNREACHABLE classification: a conflicted item that WOULD fully
+  // fix it beats a mere partial (spread alone can't, but a real item that
+  // exists, just held elsewhere, can); otherwise PARTIAL ("survives some
+  // rolls") when anything found at least got min% below 100; otherwise
+  // nothing helped at all.
   if (conflictedFix) {
     itemNotes.push(`${conflictedFix.item} would fix this but is held by ${conflictedFix.teammate} — item clause conflict`);
     return { tier: 'unreachable_by_spread', partial: bestPartial, defKey, itemNotes };
@@ -479,12 +515,27 @@ async function computeConsequences(member, fix, threatMatrix, metaContext, teamW
 
   const baselineThresholds = member.thresholds_met || [];
   const afterThresholds = after.thresholds_met || [];
-  // `threat` is already the pre-composed "Attacker Move" string (see
-  // spread_scorer.js's thresholds_met shape) — a stable identity for the same
-  // real-world threat across two scoreSpread() calls, same convention
-  // spread_scorer.js's own minimizeSpread() uses to track a threshold across
-  // a before/after pair.
-  const keyOf = (t) => `${t.category}|${t.stat}|${t.threat || t.target || ''}`;
+  // TASK 6: `threat` is a RENDERED string, not a stable identity — it can
+  // change between two scoreSpread() calls for the exact same real-world
+  // threat when something about its DISPLAY changes but the underlying
+  // (attacker/target, stat) pairing does not. Confirmed live: a speed
+  // threshold's `threat` used to embed "— speed_ohko_link 3x (also OHKOs at
+  // baseline)" whenever the 0-SP-baseline OHKO check flipped, so the SAME
+  // attacker+stat threshold got a DIFFERENT key before vs. after — showing up
+  // as "lost" under the old label AND "gained" under the new one in the same
+  // diff (Whimsicott's Speed never changed; only whether the annotation was
+  // present did). Keying on the raw, un-annotated identity field each
+  // category already carries (attacker for speed/speed_tie, attacker_name for
+  // defensive, target for offensive — none of which include the annotation)
+  // fixes this at the diff, in addition to removing the annotation from the
+  // string at its source (spread_scorer.js). `threat` is kept only as a last
+  // -resort fallback for a category this function doesn't recognize.
+  const keyOf = (t) => {
+    if (t.category === 'speed' || t.category === 'speed_tie') return `${t.category}|${t.stat}|${t.attacker || ''}`;
+    if (t.category === 'defensive') return `${t.category}|${t.stat}|${t.attacker_name || ''}`;
+    if (t.category === 'offensive') return `${t.category}|${t.stat}|${t.target || ''}`;
+    return `${t.category}|${t.stat}|${t.threat || ''}`;
+  };
   const baselineByKey = new Map(baselineThresholds.map((t) => [keyOf(t), t]));
   const afterByKey = new Map(afterThresholds.map((t) => [keyOf(t), t]));
 
@@ -536,6 +587,35 @@ function STAT_ORDER_SUM(sp) {
   return ['hp', 'atk', 'def', 'spa', 'spd', 'spe'].reduce((s, k) => s + (sp[k] || 0), 0);
 }
 
+// TASK 5's DEFAULT CRITERION for choosing among multiple successful remedy
+// options (SP/nature alone, item alone, or the item+SP fallback): the option
+// that loses the least USAGE-WEIGHTED value — a lost threshold against a
+// heavily-used real Pokemon costs far more than the identical loss against a
+// barely-played one. Each lost threshold already names (or can be resolved
+// to) the real Pokemon it concerns: `target_usage_percent` for offensive
+// thresholds (the Pokemon we're attacking), `attacker_name` for defensive
+// ones, `attacker` for speed/speed-tie ones — resolved against the same
+// top-50 real usage pool this file already draws candidates from, so a name
+// with no entry there (outside the top 50) weighs 0, not undefined.
+let usageFractionByNameLower = null;
+async function usageFractionFor(name) {
+  if (!usageFractionByNameLower) {
+    const rows = await getTop50UsageRows();
+    usageFractionByNameLower = new Map(rows.map((r) => [r.pokemon_name.toLowerCase(), round(parseFloat(r.usage_percent) / 100, 4)]));
+  }
+  return usageFractionByNameLower.get((name || '').toLowerCase()) || 0;
+}
+async function usageWeightedLoss(consequences) {
+  if (!consequences || !consequences.lost || consequences.lost.length === 0) return 0;
+  let total = 0;
+  for (const t of consequences.lost) {
+    if (t.category === 'offensive') total += round(parseFloat(t.target_usage_percent) / 100, 4) || 0;
+    else if (t.category === 'defensive') total += await usageFractionFor(t.attacker_name);
+    else total += await usageFractionFor(t.attacker);
+  }
+  return round(total, 4);
+}
+
 // --- Top-level orchestration -------------------------------------------------
 // Runs TASK 1 across the whole team, then TASK 2 + TASK 3 for every
 // GUARANTEED exchange (category A or B). Possible-OHKO exchanges are reported
@@ -554,11 +634,26 @@ async function computeOhkoRemedies(team, weatherAnalysis, legalPokemonSet, threa
     const entries = [];
     for (const exchange of guaranteed) {
       const fix = await searchRemedy(member, exchange, team);
-      let consequences = null;
-      if (fix.tier === 'sp' || fix.tier === 'nature' || fix.tier === 'item' || fix.tier === 'item+sp') {
+      if (fix.options) {
+        // TASK 5: 1+ independent options succeeded (SP/nature alone, item
+        // alone, or the item+SP fallback). Score every one's real consequences
+        // and recommend the least usage-weighted-costly — but keep the rest
+        // as disclosed alternatives, per "print every option that succeeds,
+        // labelled, with its own consequences."
         counts.fixed++;
-        consequences = await computeConsequences(member, fix, threatMatrix, metaContext, teamWeathersForContext);
-      } else if (fix.tier === 'partial') {
+        const scored = [];
+        for (const opt of fix.options) {
+          const cons = await computeConsequences(member, opt, threatMatrix, metaContext, teamWeathersForContext);
+          const lossWeight = await usageWeightedLoss(cons);
+          scored.push({ fix: opt, consequences: cons, lossWeight });
+        }
+        scored.sort((a, b) => a.lossWeight - b.lossWeight);
+        const [winner, ...alternatives] = scored;
+        entries.push({ exchange, fix: winner.fix, consequences: winner.consequences, alternatives });
+        continue;
+      }
+      let consequences = null;
+      if (fix.tier === 'partial') {
         counts.partial++;
         // Task 3 applies to PARTIAL too ("For every FIXED or PARTIAL
         // proposal...") — normalize the nested partial.* fields to the flat
@@ -665,19 +760,14 @@ function renderConsequences(consequences) {
   return lines;
 }
 
-function renderOddsLine(exchange) {
-  if (!exchange.odds) return '(roll odds unavailable)';
-  const { ohko_rolls: k, total_rolls: n } = exchange.odds;
-  return `possible OHKO — ${k}/${n} rolls kill, ${n - k}/${n} survive`;
-}
-
 // Groups by member (mandatory per the brief), then by attacker within a
 // member (see grill-me Q4: keeps the section proportional to members ×
 // distinct threatening attackers rather than members × attackers × moves).
 function renderOhkoRemedies(result) {
   const lines = [];
   const { counts } = result;
-  lines.push(`Qualifying losing exchanges: ${counts.qualifying} (${counts.fixed} FIXED, ${counts.partial} PARTIAL, ${counts.unreachable_spread} UNREACHABLE BY SPREAD, ${counts.unreachable_all} UNREACHABLE AT ALL). Possible (non-guaranteed) OHKOs: ${counts.possible}.`);
+  lines.push(`Qualifying losing exchanges: ${counts.qualifying} (${counts.fixed} FIXED, ${counts.partial} PARTIAL, ${counts.unreachable_spread} UNREACHABLE BY SPREAD, ${counts.unreachable_all} UNREACHABLE AT ALL).`);
+  lines.push('  Where multiple fixes were found for the same exchange, the FIX shown is the one losing the least usage-weighted value elsewhere on the team; other options that also worked are listed below it as ALSO POSSIBLE.');
   lines.push('');
 
   for (const [pokemon, { entries, possible, competingFixes }] of result.byMember) {
@@ -703,7 +793,7 @@ function renderOhkoRemedies(result) {
       if (attackerEntries.some((e) => e.exchange.category_a)) reasons.push('outspeeds and OHKOs');
       if (attackerEntries.some((e) => e.exchange.category_b)) reasons.push('cannot be OHKO\'d back');
       lines.push(`  ${attacker} (${first.attacker_speed} Spe) ${speedComp} ${pokemon} (${first.member_speed} Spe) [${reasons.join(', ')}] —`);
-      for (const { exchange, fix, consequences } of attackerEntries) {
+      for (const { exchange, fix, consequences, alternatives } of attackerEntries) {
         const freqNote = exchange.attacker_set_frequency
           ? ` (${exchange.attacker_set_frequency}% of ${exchange.attacker}, ${exchange.attacker_meta_frequency}% meta${exchange.rare_set ? ' — rare set' : ''})`
           : '';
@@ -711,15 +801,14 @@ function renderOhkoRemedies(result) {
         if (exchange.weather_note) lines.push(`    ${exchange.weather_note}`);
         lines.push(...renderFixLine(fix, exchange, exchange.member));
         lines.push(...renderConsequences(consequences));
+        // TASK 5: every OTHER option that also independently fixed this
+        // exchange, disclosed (not silently dropped) even though it lost to
+        // the recommendation above on usage-weighted cost.
+        for (const alt of alternatives || []) {
+          lines.push(`    ALSO POSSIBLE — ${renderFixLine(alt.fix, exchange, exchange.member)[0].trim()}`);
+          lines.push(...renderConsequences(alt.consequences).map((l) => `  ${l}`));
+        }
       }
-    }
-
-    if (possible.length > 0) {
-      lines.push(`  Possible (non-guaranteed) OHKOs against ${pokemon}: ${possible.length} — not searched for a remedy (not a guaranteed loss).`);
-      for (const exchange of possible.slice(0, 10)) {
-        lines.push(`    ${exchange.attacker} ${exchange.move} (${exchange.attacker_build}): ${exchange.damage_range} — ${renderOddsLine(exchange)}`);
-      }
-      if (possible.length > 10) lines.push(`    ... ${possible.length - 10} more not shown (see count above).`);
     }
     lines.push('');
   }
