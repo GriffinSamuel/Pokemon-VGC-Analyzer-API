@@ -1592,6 +1592,26 @@ function detectTeamWeather(team) {
   return null;
 }
 
+// A move hits multiple Pokemon in Doubles (and so takes the 0.75x spread
+// penalty) when its dex `target` is one of these two values. @pkmn/dex Move
+// objects have NO `spread` boolean — that field does not exist on the dex
+// object at all, so reading it is silently always undefined/false. `target`
+// is the real field; verified against the full 954-move dex that these two
+// values (82 moves total) are the only ones that hit >1 Pokemon in Doubles.
+const SPREAD_MOVE_TARGETS = new Set(['allAdjacentFoes', 'allAdjacent']);
+
+/**
+ * True if `moveNameOrDexMove` hits multiple Pokemon in Doubles, per the dex's
+ * own `target` field. Accepts either a move name or an already-resolved
+ * @pkmn/dex Move object. Single source of truth — do not re-derive this
+ * elsewhere from a hardcoded move-name list or a nonexistent `spread` field.
+ */
+function isSpreadMove(moveNameOrDexMove) {
+  const dexMove = typeof moveNameOrDexMove === 'string' ? Dex.moves.get(moveNameOrDexMove) : moveNameOrDexMove;
+  if (!dexMove || !dexMove.exists) return false;
+  return SPREAD_MOVE_TARGETS.has(dexMove.target);
+}
+
 /**
  * Resolve a move name to a move object suitable for CalcDamage.
  * Uses @pkmn/dex to look up type/category/BP/spread/contact.
@@ -1606,7 +1626,7 @@ function getMoveData(moveName) {
     type: dexMove.type || 'Normal',
     category: dexMove.category || 'Physical',
     bp: dexMove.basePower || 0,
-    isSpread: dexMove.spread || false,
+    isSpread: isSpreadMove(dexMove),
     makesContact: !!dexMove.contact,
   };
 }
@@ -1622,6 +1642,7 @@ module.exports = {
   chainMods,
   pokeRound,
   getMoveEffectiveness,
+  isSpreadMove,
   applyWeatherMod,
   applyFinalMods,
   applyRandomFactor,

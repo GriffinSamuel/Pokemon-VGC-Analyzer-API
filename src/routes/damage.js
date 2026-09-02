@@ -4,7 +4,7 @@ const pool = require('../db/pool');
 const { buildCacheKey, getCachedDamage, setCachedDamage } = require('../scrapers/serebii');
 const { normalizePokemonName } = require('../utils/normalize');
 const { getMostCommonSpread } = require('../utils/ev_observations');
-const { CalcDamage, buildStatsFromSP } = require('../utils/nerd_of_now_calc');
+const { CalcDamage, buildStatsFromSP, isSpreadMove } = require('../utils/nerd_of_now_calc');
 const logger = require('../utils/logger');
 const { STAT_ORDER } = require('../utils/stat_formula');
 
@@ -83,7 +83,7 @@ function runCalculation(attackerRow, defenderRow, attackerSide, defenderSide, mo
       type: moveRow?.type || 'Normal',
       category: moveRow?.category || 'Physical',
       bp: moveRow?.power || 0,
-      isSpread: moveRow?.is_spread || false,
+      isSpread: isSpreadMove(moveName),
       makesContact: false,
     },
     isDouble: true,
